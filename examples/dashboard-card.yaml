@@ -1,0 +1,4 @@
+type: custom:pool-cleaner-card
+name: Pool Dolphin
+device: YOUR_DEVICE_ID
+show_cleaner_when: auto
