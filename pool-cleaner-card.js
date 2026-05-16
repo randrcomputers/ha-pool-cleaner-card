@@ -1,10 +1,14 @@
 /**
- * Pool Cleaner Card — Home Assistant Lovelace (Maytronics Dolphin BLE).
+ * Pool Cleaner Card — Lovelace custom card (HACS)
+ * Maytronics Dolphin (BLE): local images under /local/pool_card/ + CSS overlays.
  */
 (function () {
   const LitElement = Object.getPrototypeOf(customElements.get("ha-panel-lovelace"));
   const { html, css } = LitElement.prototype;
 
+  const CARD_VERSION = "2.1.0";
+
+  /** Defaults — put robot.png / psu.png in config/www/pool_card/ */
   const DEFAULTS = Object.freeze({
     image_robot: "/local/pool_card/robot.png",
     image_psu: "/local/pool_card/psu.png",
@@ -40,6 +44,7 @@
     return (clamped / 100).toFixed(3);
   }
 
+  /** CSS variables string for overlay geometry (percents vs art box). */
   function overlayVars(config) {
     const c = config;
     return `
@@ -191,6 +196,7 @@
                 Choose your <strong>Dolphin device</strong> (recommended) or
                 <strong>Power switch</strong> in the card options.
               </p>
+              <p class="setup-ver">pool-cleaner-card.js v${CARD_VERSION}</p>
             </div>
           </ha-card>
         `;
@@ -311,6 +317,11 @@
           color: var(--primary-text-color);
           font-size: 0.95rem;
         }
+        .setup-ver {
+          margin: 0;
+          font-size: 12px;
+          color: var(--secondary-text-color);
+        }
         .header {
           display: flex;
           align-items: center;
@@ -384,6 +395,7 @@
           );
           mix-blend-mode: lighten;
           filter: brightness(var(--pc-led-brightness, 1));
+          will-change: opacity;
         }
         .card.active.pc-local .robot-led-overlay {
           animation: led-soft-breathe 2.8s ease-in-out infinite;
@@ -568,6 +580,23 @@
       return { hass: {}, config: {} };
     }
 
+    static get styles() {
+      return css`
+        .installed-meta {
+          margin-top: 14px;
+          padding: 10px 12px;
+          border-radius: 8px;
+          background: var(--secondary-background-color);
+          color: var(--secondary-text-color);
+          font-size: 12px;
+          line-height: 1.45;
+        }
+        .installed-meta strong {
+          color: var(--primary-text-color);
+        }
+      `;
+    }
+
     setConfig(config) {
       this.config = mergeConfig(config || {});
     }
@@ -659,20 +688,27 @@
               entity_connected: "BLE OK / connected (optional)",
               name: "Card title override",
               show_cleaner_when: "Robot vs power supply image",
-              image_robot: "Robot image URL",
-              image_psu: "Power supply image URL",
-              robot_led_top: "Robot LED — top %",
-              robot_led_left: "Robot LED — left %",
-              robot_led_width: "Robot LED — width %",
-              robot_led_height: "Robot LED — height %",
-              robot_led_radius: "Robot LED — corner radius (px)",
-              robot_led_brightness: "Robot LED — brightness %",
-              psu_ring_cx: "PSU ring — center X %",
-              psu_ring_cy: "PSU ring — center Y %",
+              image_robot: "Robot image URL (cleaner visible)",
+              image_psu: "Power supply image URL (idle)",
+              robot_led_top: "Blue LED overlay — top offset %",
+              robot_led_left: "Blue LED overlay — left offset %",
+              robot_led_width: "Blue LED overlay — width %",
+              robot_led_height: "Blue LED overlay — height %",
+              robot_led_radius: "Blue LED overlay — radius (px)",
+              robot_led_brightness: "Blue LED brightness (% — 100 = default)",
+              psu_ring_cx: "PSU power ring — center X %",
+              psu_ring_cy: "PSU power ring — center Y %",
               psu_ring_size: "PSU ring — diameter %",
             })[s.name] || s.name}
           @value-changed=${this._valueChanged}
         ></ha-form>
+        <div class="installed-meta">
+          <strong>pool-cleaner-card.js v${CARD_VERSION}</strong> —
+          Images from <strong>/local/</strong> (e.g. <strong>www/pool_card/</strong>). Robot + LED
+          move together while floating. Tune <strong>Blue LED brightness</strong> (%; 100 default).
+          On PSU art, ring pulses when power switch is <strong>on</strong> — align ring %
+          fields to your PNG.
+        </div>
       `;
     }
   }
@@ -680,12 +716,13 @@
   customElements.define("pool-cleaner-card", PoolCleanerCard);
   customElements.define("pool-cleaner-card-editor", PoolCleanerCardEditor);
 
+  window.__POOL_CLEANER_CARD_VERSION__ = CARD_VERSION;
+
   window.customCards = window.customCards || [];
   window.customCards.push({
     type: "pool-cleaner-card",
     name: "Pool Cleaner Card",
-    description:
-      "Maytronics Dolphin pool cleaner — dashboard card with artwork from /local/",
+    description: `Dolphin card — /local/ images + LED/PSU ring (v${CARD_VERSION})`,
     preview: true,
     documentationURL:
       "https://github.com/randrcomputers/ha-pool-cleaner-card#readme",
