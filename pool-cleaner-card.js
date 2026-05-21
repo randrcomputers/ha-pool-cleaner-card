@@ -60,6 +60,8 @@
     state: "_cleaner_state",
     cleaning: "_cleaning_active",
     connected: "_ps_state_poll_ok",
+    surface: "_cleaning_surface",
+    working: "_working_status",
   };
 
   function entityState(hass, entityId) {
@@ -68,29 +70,79 @@
   }
 
   function resolveEntities(hass, config) {
-    if (config.entity_power) {
-      return {
-        power: config.entity_power,
-        state: config.entity_state || null,
-        cleaning: config.entity_cleaning || null,
-        connected: config.entity_connected || null,
-      };
+    const manual = {
+      power: config.entity_power || null,
+      state: config.entity_state || null,
+      cleaning: config.entity_cleaning || null,
+      connected: config.entity_connected || null,
+      surface: config.entity_surface || null,
+      working: config.entity_working || null,
+    };
+    if (!config.device) {
+      return manual;
     }
-    if (config.device) {
-      const devId = config.device;
-      const found = { power: null, state: null, cleaning: null, connected: null };
-      const registry = hass.entities || {};
-      for (const [eid, ent] of Object.entries(registry)) {
-        if (ent.device_id !== devId || !hass.states[eid]) continue;
-        const uid = ent.unique_id || "";
-        if (uid.endsWith(ENTITY_SUFFIXES.power)) found.power = eid;
-        if (uid.endsWith(ENTITY_SUFFIXES.state)) found.state = eid;
-        if (uid.endsWith(ENTITY_SUFFIXES.cleaning)) found.cleaning = eid;
-        if (uid.endsWith(ENTITY_SUFFIXES.connected)) found.connected = eid;
+    const devId = config.device;
+    const found = {
+      power: null,
+      state: null,
+      cleaning: null,
+      connected: null,
+      surface: null,
+      working: null,
+    };
+    const registry = hass.entities || {};
+    for (const [eid, ent] of Object.entries(registry)) {
+      if (ent.device_id !== devId || !hass.states[eid]) continue;
+      const uid = ent.unique_id || "";
+      for (const [key, suffix] of Object.entries(ENTITY_SUFFIXES)) {
+        if (uid.endsWith(suffix)) found[key] = eid;
       }
-      return found;
     }
-    return { power: null, state: null, cleaning: null, connected: null };
+    return {
+      ...found,
+      ...manual,
+      power: manual.power || found.power,
+    };
+  }
+
+  /** ``at_work`` | ``finished`` | ``fault`` | ``unknown`` | null from integration. */
+  function getWorkingStatus(hass, entities) {
+    if (entities.working) {
+      const st = entityState(hass, entities.working);
+      const raw = st?.state;
+      if (raw && raw !== "unavailable" && raw !== "unknown") return String(raw).toLowerCase();
+    }
+    if (entities.surface) {
+      const st = entityState(hass, entities.surface);
+      const w = st?.attributes?.working_status;
+      if (w) return String(w).toLowerCase();
+    }
+    return null;
+  }
+
+  /**
+   * UI phase for labels and robot vs PSU artwork.
+   * cleaning = motors/working; done = cycle finished or hold; powered_idle = on but not at_work.
+   */
+  function cleanerUiPhase(hass, entities, config) {
+    const st = entityState(hass, entities.state);
+    const raw = st?.state;
+    const powerOn = entities.power && isOn(hass, entities.power);
+    const working = getWorkingStatus(hass, entities);
+
+    if (raw === "on") {
+      if (working === "finished") return "done";
+      if (working === "at_work") return "cleaning";
+      if (working === "fault") return "fault";
+      return "powered_idle";
+    }
+    if (raw === "hold") return "done";
+    if (raw === "off") return powerOn ? "powered_idle" : "off";
+    if (raw === "programming") return "programming";
+    if (raw === "self_test") return "self_test";
+    if (raw === "unavailable") return "unavailable";
+    if (raw === "unknown" || !raw) return powerOn ? "powered_idle" : "unknown";
+    return "unknown";
   }
 
   function isOn(hass, entityId) {
@@ -107,33 +159,37 @@
 
   function displayState(hass, entities, config) {
     if (config.state_text) return config.state_text;
-    const st = entityState(hass, entities.state);
-    if (!st) return "—";
-    const raw = st.state;
+    const phase = cleanerUiPhase(hass, entities, config);
     const labels = {
+      cleaning: "Cleaning",
+      done: "Done cleaning",
+      powered_idle: "Powered on",
       off: "Off",
-      on: "Running",
-      hold: "Hold",
       programming: "Programming",
       self_test: "Self test",
+      fault: "Fault",
       unknown: "Unknown",
+      unavailable: "Unavailable",
     };
-    return labels[raw] || st.attributes?.friendly_name || raw;
+    return labels[phase] || "—";
+  }
+
+  function statusDotClass(phase, showRobot) {
+    if (showRobot) return "pulse";
+    if (phase === "done") return "done";
+    if (phase === "powered_idle") return "idle";
+    if (phase === "fault") return "fault";
+    return "";
   }
 
   function showCleanerActive(hass, entities, config) {
     if (config.show_cleaner_when === "always") return true;
     if (config.show_cleaner_when === "never") return false;
-    if (entities.cleaning && isOn(hass, entities.cleaning)) return true;
-    if (entities.power && isOn(hass, entities.power)) return true;
-    const st = entityState(hass, entities.state);
-    if (st && st.state !== "off" && st.state !== "unknown" && st.state !== "unavailable")
-      return true;
-    return false;
+    return cleanerUiPhase(hass, entities, config) === "cleaning";
   }
 
   function isConfigIncomplete(config) {
-    return !config?.entity_power && !config?.device;
+    return !config?.device && !config?.entity_power;
   }
 
   function mergeConfig(config) {
@@ -206,6 +262,7 @@
         ) ||
         "Pool cleaner";
 
+      const phase = cleanerUiPhase(this.hass, entities, cfg);
       const active = showCleanerActive(this.hass, entities, cfg);
       const powered = entities.power && isOn(this.hass, entities.power);
       const ble = entities.connected
@@ -214,6 +271,7 @@
           entityState(this.hass, entities.power)?.state !== "unavailable";
 
       const stateLabel = displayState(this.hass, entities, cfg);
+      const dotClass = statusDotClass(phase, active);
       const imgSrc = active ? cfg.image_robot : cfg.image_psu;
 
       return html`
@@ -242,7 +300,7 @@
 
             <div class="footer">
               <div class="state-pill">
-                <span class="dot ${active ? "pulse" : ""}"></span>
+                <span class="dot ${dotClass}"></span>
                 <span class="state-text">${stateLabel}</span>
               </div>
               <button
@@ -456,6 +514,15 @@
           background: #22c55e;
           animation: pulse-dot 1.5s ease-in-out infinite;
         }
+        .dot.done {
+          background: #f59e0b;
+        }
+        .dot.idle {
+          background: #64748b;
+        }
+        .dot.fault {
+          background: #ef4444;
+        }
         .state-text {
           font-size: 0.9rem;
           color: var(--primary-text-color);
@@ -617,7 +684,7 @@
               name: "show_cleaner_when",
               type: "select",
               options: [
-                ["auto", "Auto (power / cleaning / state)"],
+                ["auto", "Auto (only while truly cleaning)"],
                 ["always", "Always show robot image"],
                 ["never", "Always show PSU image"],
               ],
