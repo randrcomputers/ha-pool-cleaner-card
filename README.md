@@ -44,7 +44,17 @@ device: YOUR_DEVICE_ID
 
 ---
 
-**Requirements:** Home Assistant 2024.1+ and the Maytronics Dolphin BLE integration (v0.7.3+ recommended for **Working status** sensor).
+**Requirements:** Home Assistant 2024.1+ and the Maytronics Dolphin BLE integration (**v0.7.4+** for reliable **Working status** on models where `fffc` GetStatus is empty).
+
+### Card entity wiring
+
+| Field | Use |
+| --- | --- |
+| **Dolphin device** | Recommended — auto-fills Power, Cleaner state, Working status |
+| **Cleaner state** | Keep as **Cleaner state** (do not swap for Clean program) |
+| **Working status** | Leave empty if device is set; card needs `at_work` / `finished` (v0.7.4 infers this when GetStatus is missing) |
+| **Cleaning active** | Optional — ignored for the status pill (too broad after a cycle) |
+| **Clean program** | Not used by this card |
 
 ## Status pill (not just “power on”)
 

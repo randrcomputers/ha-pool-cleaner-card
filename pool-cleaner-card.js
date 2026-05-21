@@ -672,6 +672,10 @@
               selector: { entity: { domain: "sensor" } },
             },
             {
+              name: "entity_working",
+              selector: { entity: { domain: "sensor" } },
+            },
+            {
               name: "entity_cleaning",
               selector: { entity: { domain: "binary_sensor" } },
             },
@@ -722,7 +726,8 @@
               device: "Dolphin device (auto-fills entities)",
               entity_power: "Power switch",
               entity_state: "Cleaner state sensor",
-              entity_cleaning: "Cleaning active (optional)",
+              entity_working: "Working status (optional; auto from device)",
+              entity_cleaning: "Cleaning active (optional, not used for status pill)",
               entity_connected: "BLE OK / connected (optional)",
               name: "Card title override",
               show_cleaner_when: "Robot vs power supply image",
