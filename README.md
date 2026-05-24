@@ -1,55 +1,74 @@
-# Pool Light Card
+# Pool Cleaner Card
 
-Lovelace card for any **RGB `light`** entity — fixture artwork, color presets, brightness slider, power toggle, and a BLE-style connectivity badge (same look as the [Pool Cleaner Card](https://github.com/randrcomputers/ha-pool-cleaner-card)).
+Lovelace card for the **[Maytronics Dolphin](https://github.com/randrcomputers/ha-maytronics-dolphin)** integration — power toggle, status, BLE icon, optional blue LED pulse on your robot artwork, and PSU button ring — using images from **`/local/`**.
 
-Works with **[iPool Light](https://github.com/randrcomputers/ha-ipool-light)** (**v0.1.3+** for the effect dropdown). Other RGB lights can use colors only.
+## Previews
 
-### Effect dropdown (iPool / LedBle)
+| Cleaner (cleaning) | Power supply / idle |
+| :---: | :---: |
+| ![Cleaner preview](media/preview-cleaner.gif) | ![Power supply preview](media/preview-power-supply.gif) |
 
-Requires integration **v0.1.3** (`ipool_light.set_rgb_effect` service). The card shows a dropdown (jump, gradient, flash) like the iPool app — **no extra HA entities**, so it does not break the light integration.
-
-The built-in HA **light more-info** dialog (power / brightness / color wheel) does not include effects; use this card on your dashboard for animations.
-
-When you pick an effect, the card can **animate the lens glow** on the fixture image (jump = stepped colors, gradient = hue sweep, flash = pulse). This is a **card-only preview** — Home Assistant does not report the lamp’s live effect mode, so after a page reload you may need to select the effect again to see the animation. Turn off **Animate lens glow when an effect is selected** in the card editor if you prefer a solid glow only.
-
-![Pool light card preview](media/preview.png)
+Your own card images (`robot` / `psu` URLs in the editor) can be **PNG, JPEG, WebP**, or **GIF** if you prefer.
 
 ## Install
 
-1. **HACS** → **Frontend** → **Custom repositories** → add `https://github.com/randrcomputers/ha-pool-light-card`
-2. **Frontend** → **Pool Light Card** → **Download**
+1. **HACS** → **Frontend** → **Custom repositories** → add `https://github.com/randrcomputers/ha-pool-cleaner-card`
+2. **Frontend** → **Pool Cleaner Card** → **Download**
 3. **Settings** → **Dashboards** → **⋮** → **Reload resources**, then refresh the browser (**Ctrl+F5**)
 
 ## Pictures on Home Assistant
 
-Copy files from the repo folder **`pool_card/`** into **`config/www/pool_card/`** on your HA host.
+Optional artwork shipped in this repo: copy the files from **`pool_card/`** into **`config/www/pool_card/`** on Home Assistant.
 
-| File to copy | Example URL |
+| File to copy (`pool_card/` → `www/pool_card/`) | Example URL |
 | --- | --- |
-| **`pool_light_fixture.png`** (fixture, light on) | `/local/pool_card/pool_light_fixture.png` |
-| **`light_control_box.png`** (control box, light off) | `/local/pool_card/light_control_box.png` |
-| **`ipool_light.png`** (your product photo) | `/local/pool_card/ipool_light.png` |
+| `robot_triton_front.png` | `/local/pool_card/robot_triton_front.png` |
+| `psu_front.png` | `/local/pool_card/psu_front.png` |
 
-See **`pool_card/README.md`** for all bundled images.
-
-If the colored glow does not line up with your lens, adjust **Lens glow — top / left / size %** in the card editor. If the color is hard to see when the light is on, raise **Lens glow — brightness %** (default **140**; try up to **200**).
-
-## Add the card
-
-Pick your **Light** entity in the UI, or YAML:
+Enter those URLs in **Robot image URL** / **Power supply image URL**, or YAML:
 
 ```yaml
-type: custom:pool-light-card
-entity: light.ipool_light
-image: /local/pool_card/pool_light_fixture.png
-image_control_box: /local/pool_card/light_control_box.png
-show_fixture_when: auto
+type: custom:pool-cleaner-card
+device: YOUR_DEVICE_ID
+image_robot: /local/pool_card/robot_triton_front.png
+image_psu: /local/pool_card/psu_front.png
 ```
 
-**Auto** shows the fixture while the light is on and the control box when off (like the pool cleaner robot / PSU swap).
+Use your own images if you prefer (PNG, JPEG, WebP, or GIF paths work).
+Use the UI and pick your **Dolphin device**, or YAML:
 
-Optional **Connected** binary sensor lights the BLE badge when `on`.
+```yaml
+type: custom:pool-cleaner-card
+device: YOUR_DEVICE_ID
+```
 
 ---
 
-**Requirements:** Home Assistant 2024.1+ and a `light` entity with `rgb` color mode.
+**Requirements:** Home Assistant 2024.1+ and the Maytronics Dolphin BLE integration (**v0.7.4+** for reliable **Working status** on models where `fffc` GetStatus is empty).
+
+### Card entity wiring
+
+| Field | Use |
+| --- | --- |
+| **Dolphin device** | Recommended — auto-fills Power, Cleaner state, Working status |
+| **Cleaner state** | Keep as **Cleaner state** (do not swap for Clean program) |
+| **Working status** | Leave empty if device is set; card needs `at_work` / `finished` (v0.7.4 infers this when GetStatus is missing) |
+| **Cleaning active** | Optional — ignored for the status pill (too broad after a cycle) |
+| **Clean program** | Not used by this card |
+
+## Status pill (not just “power on”)
+
+The card uses **Cleaner state** plus **Working status** (from the integration’s `GetStatusRead` poll, or the `working_status` attribute on **Cleaning surface**):
+
+| What you see | Meaning |
+| --- | --- |
+| **Cleaning** | Robot reports `at_work` — bubbles, robot image, green pulsing dot |
+| **Done cleaning** | Cycle finished (`finished`) or cleaner state **hold** |
+| **Powered on** | Power/PS still on but not actively cleaning (avoids false “Running”) |
+| **Off** | Cleaner state off |
+| **Programming** / **Self test** / **Fault** | Matching robot modes |
+
+Power button still reflects the **Power** switch. Robot artwork and LED overlay only appear while status is **Cleaning** (unless you set *Robot vs power supply image* to Always/Never in card options).
+
+
+
