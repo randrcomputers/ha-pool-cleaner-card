@@ -157,7 +157,9 @@
     return st.state === "on";
   }
 
-  function displayState(hass, entities, config) {
+  function displayState(hass, entities, config, pending) {
+    if (pending === "on") return "Connecting…";
+    if (pending === "off") return "Turning off…";
     if (config.state_text) return config.state_text;
     const phase = cleanerUiPhase(hass, entities, config);
     const labels = {
@@ -174,12 +176,46 @@
     return labels[phase] || "—";
   }
 
-  function statusDotClass(phase, showRobot) {
+  function statusDotClass(phase, showRobot, pending) {
+    if (pending) return "pending";
     if (showRobot) return "pulse";
     if (phase === "done") return "done";
     if (phase === "powered_idle") return "idle";
     if (phase === "fault") return "fault";
     return "";
+  }
+
+  const PENDING_TIMEOUT_MS = 120000;
+
+  function pendingResolved(hass, entities, config, pending, pendingSince) {
+    if (!pending) return true;
+    if (Date.now() - pendingSince > PENDING_TIMEOUT_MS) return true;
+
+    const st = entityState(hass, entities.state);
+    const raw = st?.state;
+    const phase = cleanerUiPhase(hass, entities, config);
+    const powerOn = entities.power && isOn(hass, entities.power);
+    const working = getWorkingStatus(hass, entities);
+
+    if (pending === "on") {
+      if (!powerOn) return false;
+      if (raw === "on" || raw === "hold" || raw === "programming" || raw === "self_test") {
+        return true;
+      }
+      if (working === "at_work" || working === "finished" || working === "fault") {
+        return true;
+      }
+      if (phase === "cleaning" || phase === "done" || phase === "powered_idle") {
+        return true;
+      }
+      return false;
+    }
+    if (pending === "off") {
+      if (raw === "off") return true;
+      if (!powerOn && phase !== "unavailable") return true;
+      return false;
+    }
+    return true;
   }
 
   function showCleanerActive(hass, entities, config) {
@@ -206,6 +242,8 @@
         hass: {},
         config: {},
         _busy: { state: false },
+        _pending: { state: null },
+        _pendingSince: { state: 0 },
       };
     }
 
@@ -225,12 +263,46 @@
       this.config = mergeConfig(config);
     }
 
+    _clearPending() {
+      this._pending = null;
+      this._pendingSince = 0;
+    }
+
+    _resolvePendingIfReady() {
+      if (!this._pending) return;
+      const entities = resolveEntities(this.hass, this.config);
+      if (
+        pendingResolved(
+          this.hass,
+          entities,
+          this.config,
+          this._pending,
+          this._pendingSince
+        )
+      ) {
+        this._clearPending();
+      }
+    }
+
+    updated(changedProperties) {
+      super.updated(changedProperties);
+      if (this._pending && changedProperties.has("hass")) {
+        this._resolvePendingIfReady();
+      }
+    }
+
     _togglePower() {
       const entities = resolveEntities(this.hass, this.config);
       if (!entities.power || this._busy) return;
+      const turningOn = !isOn(this.hass, entities.power);
+      this._pending = turningOn ? "on" : "off";
+      this._pendingSince = Date.now();
       this._busy = true;
       this.hass
         .callService("switch", "toggle", { entity_id: entities.power })
+        .catch(() => {
+          this._clearPending();
+        })
         .finally(() => {
           this._busy = false;
         });
@@ -262,22 +334,30 @@
         ) ||
         "Pool cleaner";
 
+      const pending = this._pending;
       const phase = cleanerUiPhase(this.hass, entities, cfg);
-      const active = showCleanerActive(this.hass, entities, cfg);
-      const powered = entities.power && isOn(this.hass, entities.power);
+      const active = !pending && showCleanerActive(this.hass, entities, cfg);
+      const powered =
+        pending === "on"
+          ? true
+          : pending === "off"
+            ? false
+            : entities.power && isOn(this.hass, entities.power);
       const ble = entities.connected
         ? isConnected(this.hass, entities.connected)
         : entities.power &&
           entityState(this.hass, entities.power)?.state !== "unavailable";
 
-      const stateLabel = displayState(this.hass, entities, cfg);
-      const dotClass = statusDotClass(phase, active);
+      const stateLabel = displayState(this.hass, entities, cfg, pending);
+      const dotClass = statusDotClass(phase, active, pending);
       const imgSrc = active ? cfg.image_robot : cfg.image_psu;
+      const showPsuRing =
+        !active && (powered || pending === "on");
 
       return html`
         <ha-card>
           <div
-            class="card pc-local ${active ? "active" : "idle"} ${powered ? "power-supply-on" : ""}"
+            class="card pc-local ${active ? "active" : "idle"} ${showPsuRing ? "power-supply-on" : ""} ${pending ? "pending" : ""}"
           >
             <div class="header">
               <span class="title">${title}</span>
@@ -299,17 +379,17 @@
             </div>
 
             <div class="footer">
-              <div class="state-pill">
+              <div class="state-pill ${pending ? "is-pending" : ""}">
                 <span class="dot ${dotClass}"></span>
                 <span class="state-text">${stateLabel}</span>
               </div>
               <button
-                class="power ${powered ? "on" : ""}"
+                class="power ${powered ? "on" : ""} ${pending ? "pending" : ""}"
                 ?disabled=${!entities.power || this._busy}
                 @click=${this._togglePower}
-                title="${powered ? "Turn off" : "Turn on"}"
+                title="${pending ? stateLabel : powered ? "Turn off" : "Turn on"}"
               >
-                ${this._powerIcon()}
+                ${pending ? this._pendingIcon() : this._powerIcon()}
               </button>
             </div>
           </div>
@@ -325,6 +405,23 @@
             fill="none"
             stroke="currentColor"
             stroke-width="2"
+            stroke-linecap="round"
+          />
+        </svg>
+      `;
+    }
+
+    _pendingIcon() {
+      return html`
+        <svg class="spin" viewBox="0 0 24 24" aria-hidden="true">
+          <circle
+            cx="12"
+            cy="12"
+            r="9"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-dasharray="42"
             stroke-linecap="round"
           />
         </svg>
@@ -523,6 +620,13 @@
         .dot.fault {
           background: #ef4444;
         }
+        .dot.pending {
+          background: #38bdf8;
+          animation: pulse-dot 1.2s ease-in-out infinite;
+        }
+        .state-pill.is-pending {
+          box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.25);
+        }
         .state-text {
           font-size: 0.9rem;
           color: var(--primary-text-color);
@@ -559,9 +663,22 @@
           color: #fff;
           box-shadow: 0 0 16px rgba(29, 78, 216, 0.55);
         }
+        .power.pending {
+          background: #1e3a5f;
+          color: #93c5fd;
+          box-shadow: 0 0 14px rgba(56, 189, 248, 0.45);
+        }
         .power svg {
           width: 26px;
           height: 26px;
+        }
+        .power svg.spin {
+          animation: spin 0.9s linear infinite;
+        }
+        @keyframes spin {
+          to {
+            transform: rotate(360deg);
+          }
         }
         @keyframes led-soft-breathe {
           0%,
