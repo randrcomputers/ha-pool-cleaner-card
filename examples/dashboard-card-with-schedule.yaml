@@ -1,0 +1,11 @@
+# Pool cleaner card with schedule panel (requires examples/pool-cleaner-schedule.yaml in packages/)
+type: custom:pool-cleaner-card
+name: Pool Dolphin
+device: YOUR_DEVICE_ID
+show_cleaner_when: auto
+show_schedule: true
+entity_schedule_enabled: input_boolean.pool_cleaner_schedule_enabled
+entity_schedule_time: input_datetime.pool_cleaner_schedule_time
+entity_schedule_duration: input_select.pool_cleaner_schedule_duration
+entity_schedule_days: input_text.pool_cleaner_schedule_days
+entity_script_timed: script.pool_cleaner_timed_run

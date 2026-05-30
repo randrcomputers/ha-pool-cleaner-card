@@ -1,7 +1,8 @@
-# Pool cleaner schedule — paste into configuration.yaml or a package.
-# Replace YOUR_POWER_SWITCH with your Dolphin Power entity (e.g. switch.triton_ps_plus_power).
+# Save as: config/packages/pool-cleaner-schedule.yaml
+# configuration.yaml must have:  packages: !include_dir_named packages
 #
-# Card options: map these helpers + script in the Pool Cleaner Card editor (Schedule section).
+# Creates helpers + script + automation for the Pool Cleaner Card schedule panel.
+# Edit `power:` below to your Dolphin Power switch entity_id.
 
 input_boolean:
   pool_cleaner_schedule_enabled:
@@ -21,7 +22,6 @@ input_select:
       - "1 hour"
       - "2 hours"
 
-# Weekdays HA uses now().weekday(): 0=Mon … 6=Sun (comma-separated, no spaces)
 input_text:
   pool_cleaner_schedule_days:
     name: Pool cleaner schedule days
@@ -30,7 +30,7 @@ input_text:
 
 script:
   pool_cleaner_timed_run:
-    alias: Pool cleaner — run then auto off
+    alias: Pool cleaner timed run
     mode: restart
     fields:
       power_entity:
@@ -40,18 +40,18 @@ script:
         description: Run time in minutes
         example: 120
     sequence:
-      - service: switch.turn_on
+      - action: switch.turn_on
         target:
           entity_id: "{{ power_entity }}"
       - delay:
           minutes: "{{ duration_minutes | int }}"
-      - service: switch.turn_off
+      - action: switch.turn_off
         target:
           entity_id: "{{ power_entity }}"
 
 automation:
-  pool_cleaner_scheduled_run:
-    alias: Pool cleaner — scheduled start
+  - id: pool_cleaner_scheduled_run
+    alias: Pool cleaner scheduled start
     description: Turns on at set time/day, auto off after 1h or 2h
     trigger:
       - platform: time
@@ -62,13 +62,15 @@ automation:
         state: "on"
       - condition: template
         value_template: >
-          {{ now().weekday() | string in states('input_text.pool_cleaner_schedule_days').split(',') }}
+          {% set days = states('input_text.pool_cleaner_schedule_days').split(',') | map('trim') | list %}
+          {{ now().weekday() | string in days }}
     action:
       - variables:
-          power: switch.YOUR_POWER_SWITCH
+          power: switch.triton_ps_plus_power  # ← change to your Power switch
           mins: >
             {% if is_state('input_select.pool_cleaner_schedule_duration', '1 hour') %}60{% else %}120{% endif %}
-      - service: script.pool_cleaner_timed_run
+      - action: script.pool_cleaner_timed_run
         data:
           power_entity: "{{ power }}"
           duration_minutes: "{{ mins }}"
+    mode: restart
