@@ -4,6 +4,8 @@ Lovelace card for the **[Maytronics Dolphin](https://github.com/randrcomputers/h
 
 ## Previews
 
+<img width="493" height="450" alt="image" src="https://github.com/user-attachments/assets/019ffb95-bcfe-4dff-8653-154e74f9e0ea" />
+
 | Cleaner (cleaning) | Power supply / idle |
 | :---: | :---: |
 | ![Cleaner preview](media/preview-cleaner.gif) | ![Power supply preview](media/preview-power-supply.gif) |
@@ -74,18 +76,42 @@ Power button still reflects the **Power** switch. Robot artwork and LED overlay 
 
 The card can drive a **simple HA schedule**: pick **days**, **start time**, and **1 h / 2 h** run length. Home Assistant turns the cleaner **on**, waits, then **off** — no MyDolphin APK schedule needed.
 
+**Important:** The card only edits **helpers**. It does **not** run the schedule by itself. You must install the **script + automation** below (or the scheduled time will never fire).
+
+### What to install (one YAML package)
+
+Copy **`examples/pool-cleaner-schedule.yaml`** to  
+`config/packages/pool-cleaner-schedule.yaml`
+
+That file creates everything the card expects:
+
+| Type | Entity | Purpose |
+| --- | --- | --- |
+| Helper | `input_boolean.pool_cleaner_schedule_enabled` | Schedule on/off (card toggle) |
+| Helper | `input_datetime.pool_cleaner_schedule_time` | Daily start time |
+| Helper | `input_select.pool_cleaner_schedule_duration` | `1 hour` or `2 hours` |
+| Helper | `input_text.pool_cleaner_schedule_days` | Weekdays `0`–`6` (Mon–Sun), comma-separated |
+| Script | `script.pool_cleaner_timed_run` | Power on → delay → power off |
+| Automation | `automation.pool_cleaner_scheduled_run` | Fires at start time on selected days |
+
+`configuration.yaml` must load packages:
+
+```yaml
+homeassistant:
+  packages: !include_dir_named packages
+```
+
 ### One-time setup
 
-1. Copy **`examples/pool-cleaner-schedule.yaml`** into your HA config (or merge into `configuration.yaml`).
-2. Replace **`switch.YOUR_POWER_SWITCH`** in the automation with your Dolphin **Power** entity.
+1. Copy **`examples/pool-cleaner-schedule.yaml`** → `config/packages/pool-cleaner-schedule.yaml`.
+2. In that file, set **`power:`** (automation `variables` block) to your Dolphin **Power** switch, e.g. `switch.triton_ps_plus_power`.
 3. **Developer tools → YAML → Reload** input helpers, scripts, and automations (or restart HA).
-4. Edit the **Pool Cleaner Card** → enable **Show schedule panel** and map:
-   - `input_boolean.pool_cleaner_schedule_enabled`
-   - `input_datetime.pool_cleaner_schedule_time`
-   - `input_select.pool_cleaner_schedule_duration`
-   - `input_text.pool_cleaner_schedule_days`
-   - `script.pool_cleaner_timed_run`
+4. Edit the **Pool Cleaner Card** → enable **Show schedule panel** and map all five entities + the script (see table above).
 5. Reload dashboard resources (**Ctrl+F5**).
+
+**Do not** create only the helpers in the UI — you still need **`script.pool_cleaner_timed_run`** and **`automation.pool_cleaner_scheduled_run`** from the example (or equivalent YAML).
+
+See also **`examples/dashboard-card-with-schedule.yaml`** for a full card YAML snippet.
 
 ### On the card
 
@@ -97,6 +123,80 @@ The card can drive a **simple HA schedule**: pick **days**, **start time**, and 
 | **Days** | M–S toggles (0=Monday … 6=Sunday) |
 | **Run 1 h / Run 2 h (Now)** | Start immediately; auto-off after duration |
 
+### How repeats work (no daily reset)
+
+- The **time trigger** fires **every day** at the start time you set.
+- The **day condition** skips days you did not select on the card.
+- Leave **Schedule On** and keep the **automation enabled** in Settings → Automations.
+- Home Assistant must be running at the scheduled time.
+- After changing **start time**, reload automations (or restart HA) so the trigger picks up the new value.
+
 Scheduling runs **in Home Assistant** (automation + script), so it works even when nobody has the dashboard open.
+
+### Troubleshooting (schedule did not run)
+
+The card only updates helpers. **Home Assistant** must run automation `pool_cleaner_scheduled_run` at the start time.
+
+#### Quick checks (Developer tools → States)
+
+| Entity | What you need |
+| --- | --- |
+| `input_boolean.pool_cleaner_schedule_enabled` | **on** (card “Schedule” toggle) |
+| `input_datetime.pool_cleaner_schedule_time` | Matches your start time (time only) |
+| `input_text.pool_cleaner_schedule_days` | Contains today’s weekday as a number: **0=Mon … 6=Sun** (e.g. Wednesday → `2` in `0,1,2,3,4`) |
+| `input_select.pool_cleaner_schedule_duration` | `1 hour` or `2 hours` |
+| `automation.pool_cleaner_scheduled_run` | **on** (not disabled) |
+| `script.pool_cleaner_timed_run` | Exists (no `unavailable`) |
+
+**Today’s weekday in HA:** Developer tools → **Template** → `{{ now().weekday() }}` (0=Monday, 6=Sunday). That number must appear in `input_text.pool_cleaner_schedule_days`.
+
+#### Does “Run 1 h / Run 2 h (Now)” work?
+
+| Result | Likely cause |
+| --- | --- |
+| **Now works, time does not** | Automation missing, disabled, wrong time entity, wrong day, or schedule toggle off |
+| **Now also fails** | Script wrong, or card **Power** / `power_entity` in script does not match `switch.triton_ps_plus_power` (edit YAML line 65) |
+| **Nothing in log at start time** | Package not loaded — see below |
+
+#### Verify package is loaded
+
+`configuration.yaml` must include:
+
+```yaml
+homeassistant:
+  packages: !include_dir_named packages
+```
+
+File must live at e.g. `config/packages/pool-cleaner-schedule.yaml` (same content as `examples/pool-cleaner-schedule.yaml`).
+
+After edits: **Developer tools → YAML** → reload **Input helpers**, **Scripts**, and **Automations** (or restart HA).
+
+#### Trace the automation
+
+**Settings → Automations & scenes → Pool cleaner scheduled start → Traces**
+
+- No trace at the scheduled minute → trigger never fired (time entity, HA not running, or automation disabled).
+- Trace **failed conditions** → usually schedule **Off**, wrong **day**, or empty `pool_cleaner_schedule_days`.
+- Trace timeline says **“Stopped because only a single execution is allowed”** → automation **mode** is `single` while a run is still active (often after **Run Now** or during the 1–2 h script delay). Set **mode: restart** on the automation.
+- Trace **ran** but robot did not start → check script trace; fix **power** entity in the automation `variables:` block.
+
+#### After changing start time
+
+Some setups need an **automation reload** (or HA restart) before the `time` trigger picks up a new `input_datetime` value.
+
+#### Test without waiting
+
+1. Set start time to **2–3 minutes from now**.
+2. Enable schedule, include **today** on day chips.
+3. Watch **Settings → Automations → Traces** at that minute.
+
+Or run manually: **Developer tools → Actions** → `script.pool_cleaner_timed_run` with:
+
+```yaml
+power_entity: switch.triton_ps_plus_power
+duration_minutes: 1
+```
+
+(Use your real power entity_id.)
 
 
