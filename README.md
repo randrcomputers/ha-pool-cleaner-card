@@ -70,5 +70,33 @@ The card uses **Cleaner state** plus **Working status** (from the integration’
 
 Power button still reflects the **Power** switch. Robot artwork and LED overlay only appear while status is **Cleaning** (unless you set *Robot vs power supply image* to Always/Never in card options).
 
+## Schedule (Home Assistant — not the phone app)
+
+The card can drive a **simple HA schedule**: pick **days**, **start time**, and **1 h / 2 h** run length. Home Assistant turns the cleaner **on**, waits, then **off** — no MyDolphin APK schedule needed.
+
+### One-time setup
+
+1. Copy **`examples/pool-cleaner-schedule.yaml`** into your HA config (or merge into `configuration.yaml`).
+2. Replace **`switch.YOUR_POWER_SWITCH`** in the automation with your Dolphin **Power** entity.
+3. **Developer tools → YAML → Reload** input helpers, scripts, and automations (or restart HA).
+4. Edit the **Pool Cleaner Card** → enable **Show schedule panel** and map:
+   - `input_boolean.pool_cleaner_schedule_enabled`
+   - `input_datetime.pool_cleaner_schedule_time`
+   - `input_select.pool_cleaner_schedule_duration`
+   - `input_text.pool_cleaner_schedule_days`
+   - `script.pool_cleaner_timed_run`
+5. Reload dashboard resources (**Ctrl+F5**).
+
+### On the card
+
+| Control | What it does |
+| --- | --- |
+| **Schedule On/Off** | Enables the daily automation |
+| **Start** | Time of day to start (local time) |
+| **Run 1 h / 2 h** | How long power stays on before auto-off |
+| **Days** | M–S toggles (0=Monday … 6=Sunday) |
+| **Run 1 h / Run 2 h (Now)** | Start immediately; auto-off after duration |
+
+Scheduling runs **in Home Assistant** (automation + script), so it works even when nobody has the dashboard open.
 
 

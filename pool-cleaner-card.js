@@ -228,10 +228,55 @@
     return !config?.device && !config?.entity_power;
   }
 
+  const WEEKDAYS = Object.freeze([
+    { id: 0, label: "M" },
+    { id: 1, label: "T" },
+    { id: 2, label: "W" },
+    { id: 3, label: "T" },
+    { id: 4, label: "F" },
+    { id: 5, label: "S" },
+    { id: 6, label: "S" },
+  ]);
+
+  function scheduleConfigured(config) {
+    const c = config || {};
+    return Boolean(
+      c.entity_schedule_enabled &&
+        c.entity_schedule_time &&
+        c.entity_schedule_duration &&
+        c.entity_schedule_days &&
+        c.entity_script_timed
+    );
+  }
+
+  function parseScheduleDays(raw) {
+    if (!raw || raw === "unknown" || raw === "unavailable") return new Set();
+    return new Set(
+      String(raw)
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s !== "")
+    );
+  }
+
+  function formatScheduleDays(set) {
+    return [...set].sort((a, b) => Number(a) - Number(b)).join(",");
+  }
+
+  function scheduleTimeValue(hass, entityId) {
+    const st = entityState(hass, entityId);
+    if (!st) return "09:00";
+    const attrs = st.attributes || {};
+    if (attrs.time) return String(attrs.time).slice(0, 5);
+    if (st.state && st.state.includes(":")) return st.state.slice(0, 5);
+    return "09:00";
+  }
+
   function mergeConfig(config) {
     return {
       ...DEFAULTS,
       show_cleaner_when: "auto",
+      show_schedule: false,
       ...config,
     };
   }
@@ -256,7 +301,9 @@
     }
 
     getCardSize() {
-      return 4;
+      return mergeConfig(this.config).show_schedule && scheduleConfigured(this.config)
+        ? 7
+        : 4;
     }
 
     setConfig(config) {
@@ -289,6 +336,190 @@
       if (this._pending && changedProperties.has("hass")) {
         this._resolvePendingIfReady();
       }
+    }
+
+    async _callService(domain, service, data) {
+      await this.hass.callService(domain, service, data);
+    }
+
+    async _toggleScheduleEnabled() {
+      const cfg = mergeConfig(this.config);
+      if (!cfg.entity_schedule_enabled || this._busy) return;
+      const on = isOn(this.hass, cfg.entity_schedule_enabled);
+      await this._callService("input_boolean", on ? "turn_off" : "turn_on", {
+        entity_id: cfg.entity_schedule_enabled,
+      });
+    }
+
+    async _setScheduleTime(ev) {
+      const cfg = mergeConfig(this.config);
+      if (!cfg.entity_schedule_time || this._busy) return;
+      const value = ev.target.value;
+      if (!value) return;
+      await this._callService("input_datetime", "set_datetime", {
+        entity_id: cfg.entity_schedule_time,
+        time: `${value}:00`,
+      });
+    }
+
+    async _setScheduleDuration(option) {
+      const cfg = mergeConfig(this.config);
+      if (!cfg.entity_schedule_duration || this._busy) return;
+      await this._callService("input_select", "select_option", {
+        entity_id: cfg.entity_schedule_duration,
+        option,
+      });
+    }
+
+    async _toggleScheduleDay(dayId) {
+      const cfg = mergeConfig(this.config);
+      if (!cfg.entity_schedule_days || this._busy) return;
+      const current = parseScheduleDays(
+        entityState(this.hass, cfg.entity_schedule_days)?.state
+      );
+      const key = String(dayId);
+      if (current.has(key)) current.delete(key);
+      else current.add(key);
+      await this._callService("input_text", "set_value", {
+        entity_id: cfg.entity_schedule_days,
+        value: formatScheduleDays(current),
+      });
+    }
+
+    async _runTimed(minutes) {
+      const cfg = mergeConfig(this.config);
+      const entities = resolveEntities(this.hass, cfg);
+      if (!entities.power || !cfg.entity_script_timed || this._busy) return;
+      this._busy = true;
+      try {
+        await this._callService("script", "turn_on", {
+          entity_id: cfg.entity_script_timed,
+          variables: {
+            power_entity: entities.power,
+            duration_minutes: minutes,
+          },
+        });
+        this._pending = "on";
+        this._pendingSince = Date.now();
+      } finally {
+        this._busy = false;
+      }
+    }
+
+    _renderSchedule(cfg, entities) {
+      if (!cfg.show_schedule) return html``;
+
+      if (!scheduleConfigured(cfg)) {
+        return html`
+          <div class="schedule schedule-hint">
+            <span class="schedule-title">Schedule</span>
+            <p class="schedule-msg">
+              Add helpers from
+              <code>examples/pool-cleaner-schedule.yaml</code>, then map them in
+              card options.
+            </p>
+          </div>
+        `;
+      }
+
+      const enabled = isOn(this.hass, cfg.entity_schedule_enabled);
+      const duration =
+        entityState(this.hass, cfg.entity_schedule_duration)?.state || "2 hours";
+      const days = parseScheduleDays(
+        entityState(this.hass, cfg.entity_schedule_days)?.state
+      );
+      const timeVal = scheduleTimeValue(this.hass, cfg.entity_schedule_time);
+
+      return html`
+        <div class="schedule">
+          <div class="schedule-head">
+            <span class="schedule-title">Schedule</span>
+            <label class="sched-toggle">
+              <input
+                type="checkbox"
+                .checked=${enabled}
+                ?disabled=${this._busy}
+                @change=${this._toggleScheduleEnabled}
+              />
+              <span>${enabled ? "On" : "Off"}</span>
+            </label>
+          </div>
+
+          <div class="schedule-row">
+            <span class="sched-label">Start</span>
+            <input
+              type="time"
+              class="sched-time"
+              .value=${timeVal}
+              ?disabled=${this._busy || !enabled}
+              @change=${this._setScheduleTime}
+            />
+          </div>
+
+          <div class="schedule-row">
+            <span class="sched-label">Run</span>
+            <div class="seg">
+              <button
+                type="button"
+                class="seg-btn ${duration === "1 hour" ? "active" : ""}"
+                ?disabled=${this._busy || !enabled}
+                @click=${() => this._setScheduleDuration("1 hour")}
+              >
+                1 h
+              </button>
+              <button
+                type="button"
+                class="seg-btn ${duration === "2 hours" ? "active" : ""}"
+                ?disabled=${this._busy || !enabled}
+                @click=${() => this._setScheduleDuration("2 hours")}
+              >
+                2 h
+              </button>
+            </div>
+          </div>
+
+          <div class="schedule-row days-row">
+            <span class="sched-label">Days</span>
+            <div class="day-chips">
+              ${WEEKDAYS.map(
+                (d) => html`
+                  <button
+                    type="button"
+                    class="day-chip ${days.has(String(d.id)) ? "on" : ""}"
+                    ?disabled=${this._busy || !enabled}
+                    @click=${() => this._toggleScheduleDay(d.id)}
+                    title="Weekday ${d.id}"
+                  >
+                    ${d.label}
+                  </button>
+                `
+              )}
+            </div>
+          </div>
+
+          <div class="schedule-row run-row">
+            <span class="sched-label">Now</span>
+            <div class="run-btns">
+              <button
+                type="button"
+                class="run-btn"
+                ?disabled=${!entities.power || this._busy}
+                @click=${() => this._runTimed(60)}
+              >
+                Run 1 h
+              </button>
+              <button
+                type="button"
+                class="run-btn"
+                ?disabled=${!entities.power || this._busy}
+                @click=${() => this._runTimed(120)}
+              >
+                Run 2 h
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
     }
 
     _togglePower() {
@@ -392,6 +623,8 @@
                 ${pending ? this._pendingIcon() : this._powerIcon()}
               </button>
             </div>
+
+            ${this._renderSchedule(cfg, entities)}
           </div>
         </ha-card>
       `;
@@ -729,6 +962,121 @@
             box-shadow: 0 0 0 6px rgba(34, 197, 94, 0);
           }
         }
+        .schedule {
+          margin-top: 12px;
+          padding-top: 10px;
+          border-top: 1px solid var(--divider-color, rgba(255, 255, 255, 0.08));
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .schedule-hint .schedule-msg {
+          margin: 4px 0 0;
+          font-size: 0.78rem;
+          color: var(--secondary-text-color);
+          line-height: 1.35;
+        }
+        .schedule-hint code {
+          font-size: 0.72rem;
+        }
+        .schedule-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+        }
+        .schedule-title {
+          font-size: 0.78rem;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+          color: var(--secondary-text-color);
+        }
+        .sched-toggle {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 0.82rem;
+          color: var(--primary-text-color);
+          cursor: pointer;
+        }
+        .schedule-row {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .days-row {
+          align-items: flex-start;
+        }
+        .sched-label {
+          width: 2.5rem;
+          flex-shrink: 0;
+          font-size: 0.78rem;
+          color: var(--secondary-text-color);
+        }
+        .sched-time {
+          flex: 1;
+          padding: 6px 8px;
+          border-radius: 8px;
+          border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.12));
+          background: var(--secondary-background-color);
+          color: var(--primary-text-color);
+          font-size: 0.9rem;
+        }
+        .seg {
+          display: flex;
+          flex: 1;
+          gap: 6px;
+        }
+        .seg-btn,
+        .run-btn {
+          flex: 1;
+          padding: 6px 10px;
+          border-radius: 8px;
+          border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.12));
+          background: var(--secondary-background-color);
+          color: var(--primary-text-color);
+          font-size: 0.82rem;
+          cursor: pointer;
+        }
+        .seg-btn.active {
+          background: rgba(29, 78, 216, 0.35);
+          border-color: #1d4ed8;
+          color: #fff;
+        }
+        .seg-btn:disabled,
+        .run-btn:disabled,
+        .sched-time:disabled {
+          opacity: 0.45;
+          cursor: not-allowed;
+        }
+        .day-chips {
+          display: flex;
+          flex: 1;
+          gap: 4px;
+          flex-wrap: wrap;
+        }
+        .day-chip {
+          width: 28px;
+          height: 28px;
+          border-radius: 50%;
+          border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.12));
+          background: var(--secondary-background-color);
+          color: var(--primary-text-color);
+          font-size: 0.72rem;
+          font-weight: 600;
+          cursor: pointer;
+          padding: 0;
+        }
+        .day-chip.on {
+          background: #1d4ed8;
+          border-color: #1d4ed8;
+          color: #fff;
+        }
+        .run-row .run-btns {
+          display: flex;
+          flex: 1;
+          gap: 6px;
+        }
       `;
     }
   }
@@ -837,6 +1185,30 @@
             numPercentSchema("psu_ring_cx"),
             numPercentSchema("psu_ring_cy"),
             numPercentSchema("psu_ring_size"),
+            {
+              name: "show_schedule",
+              selector: { boolean: {} },
+            },
+            {
+              name: "entity_schedule_enabled",
+              selector: { entity: { domain: "input_boolean" } },
+            },
+            {
+              name: "entity_schedule_time",
+              selector: { entity: { domain: "input_datetime" } },
+            },
+            {
+              name: "entity_schedule_duration",
+              selector: { entity: { domain: "input_select" } },
+            },
+            {
+              name: "entity_schedule_days",
+              selector: { entity: { domain: "input_text" } },
+            },
+            {
+              name: "entity_script_timed",
+              selector: { entity: { domain: "script" } },
+            },
           ]}
           .computeLabel=${(s) =>
             ({
@@ -848,6 +1220,12 @@
               entity_connected: "BLE OK / connected (optional)",
               name: "Card title override",
               show_cleaner_when: "Robot vs power supply image",
+              show_schedule: "Show schedule panel (requires helpers — see examples/)",
+              entity_schedule_enabled: "Schedule — enabled (input_boolean)",
+              entity_schedule_time: "Schedule — start time (input_datetime, time only)",
+              entity_schedule_duration: "Schedule — duration (input_select: 1 hour / 2 hours)",
+              entity_schedule_days: "Schedule — days (input_text, comma weekdays 0=Mon)",
+              entity_script_timed: "Timed run script (script.pool_cleaner_timed_run)",
               image_robot: "Robot image URL",
               image_psu: "Power supply image URL",
               robot_led_top: "Robot LED — top %",
@@ -874,7 +1252,7 @@
     type: "pool-cleaner-card",
     name: "Pool Cleaner Card",
     description:
-      "Maytronics Dolphin pool cleaner — dashboard card with artwork from /local/",
+      "Maytronics Dolphin — power, status, optional HA schedule (1h/2h, days, time)",
     preview: true,
     documentationURL:
       "https://github.com/randrcomputers/ha-pool-cleaner-card#readme",
