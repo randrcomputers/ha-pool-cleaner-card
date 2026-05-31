@@ -289,6 +289,7 @@
         _busy: { state: false },
         _pending: { state: null },
         _pendingSince: { state: 0 },
+        _scheduleExpanded: { state: false },
       };
     }
 
@@ -301,9 +302,15 @@
     }
 
     getCardSize() {
-      return mergeConfig(this.config).show_schedule && scheduleConfigured(this.config)
-        ? 7
-        : 4;
+      const cfg = mergeConfig(this.config);
+      if (cfg.show_schedule && scheduleConfigured(cfg)) {
+        return this._scheduleExpanded ? 7 : 5;
+      }
+      return 4;
+    }
+
+    _toggleSchedulePanel() {
+      this._scheduleExpanded = !this._scheduleExpanded;
     }
 
     setConfig(config) {
@@ -431,19 +438,38 @@
       const timeVal = scheduleTimeValue(this.hass, cfg.entity_schedule_time);
 
       return html`
-        <div class="schedule">
+        <div class="schedule ${this._scheduleExpanded ? "open" : "collapsed"}">
           <div class="schedule-head">
-            <span class="schedule-title">Schedule</span>
-            <label class="sched-toggle">
-              <input
-                type="checkbox"
-                .checked=${enabled}
-                ?disabled=${this._busy}
-                @change=${this._toggleScheduleEnabled}
-              />
-              <span>${enabled ? "On" : "Off"}</span>
-            </label>
+            <button
+              type="button"
+              class="schedule-expand"
+              @click=${this._toggleSchedulePanel}
+              aria-expanded=${this._scheduleExpanded ? "true" : "false"}
+            >
+              <span class="schedule-title">Schedule</span>
+              <span class="schedule-chevron" aria-hidden="true"
+                >${this._scheduleExpanded ? "▾" : "▸"}</span
+              >
+            </button>
+            ${!this._scheduleExpanded
+              ? html`<span class="schedule-summary"
+                  >${enabled ? "On" : "Off"}</span
+                >`
+              : ""}
           </div>
+
+          ${this._scheduleExpanded
+            ? html`
+          <label class="sched-toggle sched-enable-row">
+            <span class="sched-label">Enable</span>
+            <input
+              type="checkbox"
+              .checked=${enabled}
+              ?disabled=${this._busy}
+              @change=${this._toggleScheduleEnabled}
+            />
+            <span>${enabled ? "On" : "Off"}</span>
+          </label>
 
           <div class="schedule-row">
             <span class="sched-label">Start</span>
@@ -518,6 +544,8 @@
               </button>
             </div>
           </div>
+            `
+            : ""}
         </div>
       `;
     }
@@ -983,6 +1011,37 @@
           display: flex;
           align-items: center;
           justify-content: space-between;
+          gap: 8px;
+        }
+        .schedule-expand {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex: 1;
+          padding: 0;
+          border: none;
+          background: none;
+          color: inherit;
+          font: inherit;
+          cursor: pointer;
+          text-align: left;
+        }
+        .schedule-expand:focus-visible {
+          outline: 2px solid var(--primary-color);
+          outline-offset: 2px;
+          border-radius: 4px;
+        }
+        .schedule-chevron {
+          font-size: 0.85rem;
+          color: var(--secondary-text-color);
+        }
+        .schedule-summary {
+          font-size: 0.78rem;
+          color: var(--secondary-text-color);
+          flex-shrink: 0;
+        }
+        .schedule.collapsed .schedule-summary {
+          color: var(--primary-color);
         }
         .schedule-title {
           font-size: 0.78rem;
@@ -998,6 +1057,14 @@
           font-size: 0.82rem;
           color: var(--primary-text-color);
           cursor: pointer;
+        }
+        .sched-enable-row {
+          justify-content: flex-start;
+          margin-bottom: 2px;
+        }
+        .sched-enable-row .sched-label {
+          width: auto;
+          min-width: 2.5rem;
         }
         .schedule-row {
           display: flex;
