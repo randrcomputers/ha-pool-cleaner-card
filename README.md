@@ -3,6 +3,7 @@
 Lovelace card for the **[Maytronics Dolphin](https://github.com/randrcomputers/ha-maytronics-dolphin)** integration — power toggle, status, BLE icon, optional blue LED pulse on your robot artwork, and PSU button ring — using images from **`/local/`**.
 
 ## Previews
+<img width="497" height="458" alt="image" src="https://github.com/user-attachments/assets/0031bf8c-7ff8-465f-94eb-ae7aa473a1d7" />
 
 | Cleaner (cleaning) | Power supply / idle |
 | :---: | :---: |
