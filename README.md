@@ -4,8 +4,6 @@ Lovelace card for the **[Maytronics Dolphin](https://github.com/randrcomputers/h
 
 ## Previews
 
-<img width="493" height="450" alt="image" src="https://github.com/user-attachments/assets/019ffb95-bcfe-4dff-8653-154e74f9e0ea" />
-
 | Cleaner (cleaning) | Power supply / idle |
 | :---: | :---: |
 | ![Cleaner preview](media/preview-cleaner.gif) | ![Power supply preview](media/preview-power-supply.gif) |
@@ -125,11 +123,21 @@ See also **`examples/dashboard-card-with-schedule.yaml`** for a full card YAML s
 
 ### How repeats work (no daily reset)
 
-- The **time trigger** fires **every day** at the start time you set.
-- The **day condition** skips days you did not select on the card.
-- Leave **Schedule On** and keep the **automation enabled** in Settings → Automations.
-- Home Assistant must be running at the scheduled time.
-- After changing **start time**, reload automations (or restart HA) so the trigger picks up the new value.
+There is **nothing to reset** each night. The automation runs **once per day** when **all** of these are true:
+
+1. Clock matches **Start** (`input_datetime.pool_cleaner_schedule_time`) — checked every minute.
+2. **Schedule** toggle is **On**.
+3. **Today** is one of the day chips you selected (`0` = Mon … `6` = Sun).
+
+Tomorrow at the same time, the same checks run again automatically. You only change helpers on the card; no cron job or manual reload for the next day.
+
+Leave the **automation enabled** in Settings → Automations and keep **Home Assistant running** at the scheduled time.
+
+### Changing start time (no automation reload)
+
+The example automation uses a **once-per-minute** trigger and compares the clock to the helper. When you change **Start** on the card, the new time applies on the **next** matching minute — you do **not** need Developer tools → Reload automations.
+
+(Older setups used `trigger: time` + `at: input_datetime…`; that pattern often requires a reload after each time change — update your package from `examples/pool-cleaner-schedule.yaml` if you still have that.)
 
 Scheduling runs **in Home Assistant** (automation + script), so it works even when nobody has the dashboard open.
 
@@ -179,10 +187,6 @@ After edits: **Developer tools → YAML** → reload **Input helpers**, **Script
 - Trace **failed conditions** → usually schedule **Off**, wrong **day**, or empty `pool_cleaner_schedule_days`.
 - Trace timeline says **“Stopped because only a single execution is allowed”** → automation **mode** is `single` while a run is still active (often after **Run Now** or during the 1–2 h script delay). Set **mode: restart** on the automation.
 - Trace **ran** but robot did not start → check script trace; fix **power** entity in the automation `variables:` block.
-
-#### After changing start time
-
-Some setups need an **automation reload** (or HA restart) before the `time` trigger picks up a new `input_datetime` value.
 
 #### Test without waiting
 
