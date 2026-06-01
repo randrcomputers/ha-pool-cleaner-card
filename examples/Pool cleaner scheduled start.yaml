@@ -1,0 +1,24 @@
+alias: Pool cleaner scheduled start
+description: Turns on at set time/day, auto off after 1h or 2h
+triggers:
+  - at: input_datetime.pool_cleaner_schedule_time
+    trigger: time
+conditions:
+  - condition: state
+    entity_id: input_boolean.pool_cleaner_schedule_enabled
+    state: "on"
+  - condition: template
+    value_template: >
+      {{ now().weekday() | string in
+      states('input_text.pool_cleaner_schedule_days').split(',') }}
+actions:
+  - variables:
+      power: switch.triton_ps_plus_power
+      mins: >
+        {% if is_state('input_select.pool_cleaner_schedule_duration', '1 hour')
+        %}60{% else %}120{% endif %}
+  - action: script.pool_cleaner_timed_run
+    data:
+      power_entity: "{{ power }}"
+      duration_minutes: "{{ mins }}"
+mode: restart
