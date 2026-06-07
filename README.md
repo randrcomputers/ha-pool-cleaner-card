@@ -74,13 +74,15 @@ Power button still reflects the **Power** switch. Robot artwork and LED overlay 
 
 The card can drive a **simple HA schedule**: pick **days**, one or two **start times**, and **1 h / 2 h** run length. Home Assistant turns the cleaner **on**, waits, then **off**.
 
-### Recommended: integration schedule (Dolphin v1.0.14+)
+### Recommended: integration schedule (Dolphin v1.15.0+)
 
-If the **Maytronics Dolphin** integration is **v1.0.14+** and the card has your **Dolphin device** selected:
+If the **Maytronics Dolphin** integration is **v1.15.0+** (v1.14.0+ for basic schedule) and the card has your **Dolphin device** selected:
 
 1. Enable **Show schedule panel** on the card.
 2. Leave **Schedule backend** on **Auto** (default).
 3. **No YAML package required** — schedule is stored in the integration.
+
+**Run 1** and **Run 2** each have their own **Days** row (e.g. weekdays for morning run, weekends for afternoon).
 
 Update integration + card, reload resources (**Ctrl+F5**). Optional: remove or disable old `pool-cleaner-schedule.yaml` automations so only one scheduler runs.
 

@@ -94,10 +94,22 @@
     };
     const registry = hass.entities || {};
     for (const [eid, ent] of Object.entries(registry)) {
-      if (ent.device_id !== devId || !hass.states[eid]) continue;
+      if (ent.device_id !== devId) continue;
       const uid = ent.unique_id || "";
       for (const [key, suffix] of Object.entries(ENTITY_SUFFIXES)) {
-        if (uid.endsWith(suffix)) found[key] = eid;
+        if (!uid.endsWith(suffix)) continue;
+        // Schedule sensor may exist before first state push — still bind it.
+        if (key === "schedule" || hass.states[eid]) {
+          found[key] = eid;
+        }
+      }
+    }
+    if (!found.schedule) {
+      for (const [eid, ent] of Object.entries(registry)) {
+        if (ent.device_id === devId && (ent.unique_id || "").endsWith("_schedule")) {
+          found.schedule = eid;
+          break;
+        }
       }
     }
     return {
@@ -285,28 +297,31 @@
     const st = entityState(hass, scheduleEntityId);
     const empty = {
       enabled: false,
-      days: new Set(),
+      run1Days: new Set(),
       run1Time: "09:00",
       run1Duration: "2 hours",
       run2Enabled: false,
+      run2Days: new Set(),
       run2Time: "17:00",
       run2Duration: "1 hour",
     };
     if (!st) return empty;
     const a = st.attributes || {};
+    const legacyDays = parseScheduleDays(a.days);
     return {
       enabled: st.state === "on",
-      days: parseScheduleDays(a.days),
+      run1Days: a.run1_days != null ? parseScheduleDays(a.run1_days) : legacyDays,
       run1Time: String(a.run1_time || "09:00").slice(0, 5),
       run1Duration: durationLabelFromMinutes(a.run1_duration_minutes),
       run2Enabled: Boolean(a.run2_enabled),
+      run2Days: a.run2_days != null ? parseScheduleDays(a.run2_days) : legacyDays,
       run2Time: String(a.run2_time || "17:00").slice(0, 5),
       run2Duration: durationLabelFromMinutes(a.run2_duration_minutes),
     };
   }
 
   function formatScheduleSummaryFromState(state) {
-    if (!state.enabled) return "Off";
+    if (!state.enabled) return "Schedule off";
     if (!state.run2Enabled) return `On · ${state.run1Time}`;
     return `On · ${state.run1Time} & ${state.run2Time}`;
   }
@@ -340,7 +355,7 @@
         readIntegrationSchedule(hass, entities.schedule)
       );
     }
-    if (!isOn(hass, cfg.entity_schedule_enabled)) return "Off";
+    if (!isOn(hass, cfg.entity_schedule_enabled)) return "Schedule off";
     const t1 = scheduleTimeValue(hass, cfg.entity_schedule_time);
     if (!scheduleSlot2Configured(hass, cfg)) return `On · ${t1}`;
     if (!isOn(hass, cfg.entity_schedule_2_enabled)) return `On · ${t1}`;
@@ -367,6 +382,8 @@
         _pending: { state: null },
         _pendingSince: { state: 0 },
         _scheduleExpanded: { state: false },
+        /** Optimistic integration schedule until sensor state catches up. */
+        _schedDraft: { state: null },
       };
     }
 
@@ -421,6 +438,55 @@
       if (this._pending && changedProperties.has("hass")) {
         this._resolvePendingIfReady();
       }
+      if (changedProperties.has("hass") && this._schedDraft && this.hass) {
+        const cfg = mergeConfig(this.config);
+        const entities = resolveEntities(this.hass, cfg);
+        const live = readIntegrationSchedule(this.hass, entities.schedule);
+        const d = this._schedDraft;
+        const liveDays1 = formatScheduleDays(live.run1Days);
+        const draftDays1 = formatScheduleDays(d.run1Days);
+        const liveDays2 = formatScheduleDays(live.run2Days);
+        const draftDays2 = formatScheduleDays(d.run2Days);
+        if (
+          d.enabled === live.enabled &&
+          d.run1Time === live.run1Time &&
+          d.run2Enabled === live.run2Enabled &&
+          draftDays1 === liveDays1 &&
+          draftDays2 === liveDays2
+        ) {
+          this._schedDraft = null;
+        }
+      }
+    }
+
+    _integrationScheduleState(hass, cfg, entities) {
+      const live = readIntegrationSchedule(hass, entities.schedule);
+      if (!this._schedDraft) return live;
+      return { ...live, ...this._schedDraft };
+    }
+
+    _patchSchedDraft(patch) {
+      const cfg = mergeConfig(this.config);
+      const entities = resolveEntities(this.hass, cfg);
+      const cur = this._integrationScheduleState(this.hass, cfg, entities);
+      const next = { ...cur, ...patch };
+      if (patch.run1_duration_minutes != null) {
+        next.run1Duration = durationLabelFromMinutes(patch.run1_duration_minutes);
+      }
+      if (patch.run2_duration_minutes != null) {
+        next.run2Duration = durationLabelFromMinutes(patch.run2_duration_minutes);
+      }
+      if (patch.run1_time != null) next.run1Time = String(patch.run1_time).slice(0, 5);
+      if (patch.run2_time != null) next.run2Time = String(patch.run2_time).slice(0, 5);
+      if (patch.enabled != null) next.enabled = Boolean(patch.enabled);
+      if (patch.run2_enabled != null) next.run2Enabled = Boolean(patch.run2_enabled);
+      if (patch.run1_days != null) next.run1Days = parseScheduleDays(patch.run1_days);
+      if (patch.run2_days != null) next.run2Days = parseScheduleDays(patch.run2_days);
+      if (patch.days != null) {
+        next.run1Days = parseScheduleDays(patch.days);
+        next.run2Days = parseScheduleDays(patch.days);
+      }
+      this._schedDraft = next;
     }
 
     async _callService(domain, service, data) {
@@ -430,19 +496,25 @@
     async _dolphinSchedule(data) {
       const cfg = mergeConfig(this.config);
       if (!cfg.device || this._busy) return;
+      this._patchSchedDraft(data);
       await this._callService("maytronics_dolphin", "set_schedule", {
         device_id: cfg.device,
         ...data,
       });
     }
 
-    async _toggleScheduleEnabled() {
+    async _toggleScheduleEnabled(ev) {
       const cfg = mergeConfig(this.config);
       if (this._busy) return;
       if (usesIntegrationSchedule(this.hass, cfg)) {
-        const entities = resolveEntities(this.hass, cfg);
-        const st = readIntegrationSchedule(this.hass, entities.schedule);
-        await this._dolphinSchedule({ enabled: !st.enabled });
+        const on =
+          ev?.target?.checked ??
+          !this._integrationScheduleState(
+            this.hass,
+            cfg,
+            resolveEntities(this.hass, cfg)
+          ).enabled;
+        await this._dolphinSchedule({ enabled: on });
         return;
       }
       if (!cfg.entity_schedule_enabled) return;
@@ -496,13 +568,14 @@
       });
     }
 
-    async _toggleSchedule2Enabled() {
+    async _toggleSchedule2Enabled(ev) {
       const cfg = mergeConfig(this.config);
       if (this._busy) return;
       if (usesIntegrationSchedule(this.hass, cfg)) {
         const entities = resolveEntities(this.hass, cfg);
-        const st = readIntegrationSchedule(this.hass, entities.schedule);
-        await this._dolphinSchedule({ run2_enabled: !st.run2Enabled });
+        const st = this._integrationScheduleState(this.hass, cfg, entities);
+        const on = ev?.target?.checked ?? !st.run2Enabled;
+        await this._dolphinSchedule({ run2_enabled: on });
         return;
       }
       if (!cfg.entity_schedule_2_enabled) return;
@@ -516,10 +589,7 @@
       cfg,
       {
         title,
-        enabled,
         masterEnabled,
-        timeEntity,
-        durationEntity,
         timeVal,
         duration,
         onTimeChange,
@@ -527,9 +597,13 @@
         showSlotEnable = false,
         slotEnabled = false,
         onSlotEnable,
+        showDays = false,
+        days = new Set(),
+        onDayToggle = null,
       }
     ) {
-      const disabled = this._busy || !masterEnabled;
+      const disabled = this._busy;
+      const slotOff = showSlotEnable && !slotEnabled;
       return html`
         <div class="schedule-slot">
           <div class="schedule-slot-head">
@@ -554,7 +628,7 @@
               type="time"
               class="sched-time"
               .value=${timeVal}
-              ?disabled=${disabled || (showSlotEnable && !slotEnabled)}
+              ?disabled=${disabled || slotOff}
               @change=${onTimeChange}
             />
           </div>
@@ -564,7 +638,7 @@
               <button
                 type="button"
                 class="seg-btn ${duration === "1 hour" ? "active" : ""}"
-                ?disabled=${disabled || (showSlotEnable && !slotEnabled)}
+                ?disabled=${disabled || slotOff}
                 @click=${() => onDuration("1 hour")}
               >
                 1 h
@@ -572,28 +646,52 @@
               <button
                 type="button"
                 class="seg-btn ${duration === "2 hours" ? "active" : ""}"
-                ?disabled=${disabled || (showSlotEnable && !slotEnabled)}
+                ?disabled=${disabled || slotOff}
                 @click=${() => onDuration("2 hours")}
               >
                 2 h
               </button>
             </div>
           </div>
+          ${showDays
+            ? html`
+                <div class="schedule-row days-row">
+                  <span class="sched-label">Days</span>
+                  <div class="day-chips">
+                    ${WEEKDAYS.map(
+                      (d) => html`
+                        <button
+                          type="button"
+                          class="day-chip ${days.has(String(d.id)) ? "on" : ""}"
+                          ?disabled=${disabled || slotOff}
+                          @click=${() => onDayToggle?.(d.id)}
+                          title="Weekday ${d.id}"
+                        >
+                          ${d.label}
+                        </button>
+                      `
+                    )}
+                  </div>
+                </div>
+              `
+            : ""}
         </div>
       `;
     }
 
-    async _toggleScheduleDay(dayId) {
+    async _toggleScheduleDay(dayId, runSlot = "run1") {
       const cfg = mergeConfig(this.config);
       if (this._busy) return;
       if (usesIntegrationSchedule(this.hass, cfg)) {
         const entities = resolveEntities(this.hass, cfg);
-        const st = readIntegrationSchedule(this.hass, entities.schedule);
-        const current = new Set(st.days);
+        const st = this._integrationScheduleState(this.hass, cfg, entities);
+        const daysKey = runSlot === "run2" ? "run2Days" : "run1Days";
+        const serviceKey = runSlot === "run2" ? "run2_days" : "run1_days";
+        const current = new Set(st[daysKey]);
         const key = String(dayId);
         if (current.has(key)) current.delete(key);
         else current.add(key);
-        await this._dolphinSchedule({ days: formatScheduleDays(current) });
+        await this._dolphinSchedule({ [serviceKey]: formatScheduleDays(current) });
         return;
       }
       if (!cfg.entity_schedule_days) return;
@@ -647,7 +745,7 @@
             <span class="schedule-title">Schedule</span>
             <p class="schedule-msg">
               Pick your <strong>Dolphin device</strong> and use integration
-              v1.0.14+ schedule, or add helpers from
+              v1.15.0+ schedule, or add helpers from
               <code>examples/pool-cleaner-schedule.yaml</code>.
             </p>
           </div>
@@ -656,7 +754,7 @@
 
       const integration = usesIntegrationSchedule(this.hass, cfg);
       const ist = integration
-        ? readIntegrationSchedule(this.hass, entities.schedule)
+        ? this._integrationScheduleState(this.hass, cfg, entities)
         : null;
       const enabled = integration
         ? ist.enabled
@@ -664,11 +762,11 @@
       const duration = integration
         ? ist.run1Duration
         : entityState(this.hass, cfg.entity_schedule_duration)?.state || "2 hours";
-      const days = integration
-        ? ist.days
-        : parseScheduleDays(
-            entityState(this.hass, cfg.entity_schedule_days)?.state
-          );
+      const helperDays = parseScheduleDays(
+        entityState(this.hass, cfg.entity_schedule_days)?.state
+      );
+      const run1Days = integration ? ist.run1Days : helperDays;
+      const run2Days = integration ? ist.run2Days : helperDays;
       const timeVal = integration
         ? ist.run1Time
         : scheduleTimeValue(this.hass, cfg.entity_schedule_time);
@@ -687,7 +785,9 @@
         : slot2
           ? scheduleTimeValue(this.hass, cfg.entity_schedule_time_2)
           : "17:00";
-      const summary = formatScheduleSummary(this.hass, cfg, entities);
+      const summary = integration
+        ? formatScheduleSummaryFromState(ist)
+        : formatScheduleSummary(this.hass, cfg, entities);
 
       return html`
         <div class="schedule ${this._scheduleExpanded ? "open" : "collapsed"}">
@@ -716,41 +816,49 @@
               type="checkbox"
               .checked=${enabled}
               ?disabled=${this._busy}
-              @change=${this._toggleScheduleEnabled}
+              @change=${(ev) => this._toggleScheduleEnabled(ev)}
             />
             <span>${enabled ? "On" : "Off"}</span>
           </label>
+          ${!enabled
+            ? html`<p class="schedule-hint-inline">
+                Set times and days below, then turn <strong>Enable</strong> on to
+                run automatically.
+              </p>`
+            : ""}
 
           ${this._renderScheduleSlot(cfg, {
             title: slot2 ? "Run 1" : "Daily run",
-            enabled,
             masterEnabled: enabled,
-            timeEntity: cfg.entity_schedule_time,
-            durationEntity: cfg.entity_schedule_duration,
             timeVal,
             duration,
             onTimeChange: (ev) => this._setScheduleTime(ev),
             onDuration: (opt) => this._setScheduleDuration(opt),
+            showDays: integration,
+            days: run1Days,
+            onDayToggle: (d) => this._toggleScheduleDay(d, "run1"),
           })}
           ${slot2
             ? this._renderScheduleSlot(cfg, {
                 title: "Run 2",
-                enabled: slot2Enabled,
                 masterEnabled: enabled,
-                timeEntity: cfg.entity_schedule_time_2,
-                durationEntity: cfg.entity_schedule_duration_2,
                 timeVal: timeVal2,
                 duration: duration2,
                 showSlotEnable: true,
                 slotEnabled: slot2Enabled,
-                onSlotEnable: () => this._toggleSchedule2Enabled(),
+                onSlotEnable: (ev) => this._toggleSchedule2Enabled(ev),
                 onTimeChange: (ev) =>
                   this._setScheduleTime(ev, "entity_schedule_time_2"),
                 onDuration: (opt) =>
                   this._setScheduleDuration(opt, "entity_schedule_duration_2"),
+                showDays: integration,
+                days: run2Days,
+                onDayToggle: (d) => this._toggleScheduleDay(d, "run2"),
               })
             : ""}
 
+          ${!integration
+            ? html`
           <div class="schedule-row days-row">
             <span class="sched-label">Days</span>
             <div class="day-chips">
@@ -758,8 +866,8 @@
                 (d) => html`
                   <button
                     type="button"
-                    class="day-chip ${days.has(String(d.id)) ? "on" : ""}"
-                    ?disabled=${this._busy || !enabled}
+                    class="day-chip ${helperDays.has(String(d.id)) ? "on" : ""}"
+                    ?disabled=${this._busy}
                     @click=${() => this._toggleScheduleDay(d.id)}
                     title="Weekday ${d.id}"
                   >
@@ -769,6 +877,8 @@
               )}
             </div>
           </div>
+            `
+            : ""}
 
           <div class="schedule-row run-row">
             <span class="sched-label">Now</span>
@@ -1342,6 +1452,12 @@
           width: auto;
           min-width: 2.5rem;
         }
+        .schedule-hint-inline {
+          margin: 0 0 6px;
+          font-size: 0.74rem;
+          line-height: 1.35;
+          color: var(--secondary-text-color);
+        }
         .schedule-row {
           display: flex;
           align-items: center;
@@ -1534,12 +1650,24 @@
             },
             {
               name: "schedule_source",
-              type: "select",
-              options: [
-                ["auto", "Auto (integration if Dolphin device set)"],
-                ["integration", "Integration schedule (v1.0.14+)"],
-                ["helpers", "YAML helpers + automations"],
-              ],
+              selector: {
+                select: {
+                  options: [
+                    {
+                      value: "auto",
+                      label: "Auto (integration if Dolphin device set)",
+                    },
+                    {
+                      value: "integration",
+                      label: "Integration schedule (Dolphin v1.15.0+)",
+                    },
+                    {
+                      value: "helpers",
+                      label: "YAML helpers + automations",
+                    },
+                  ],
+                },
+              },
             },
             {
               name: "entity_schedule_enabled",
@@ -1584,8 +1712,8 @@
               entity_connected: "BLE OK / connected (optional)",
               name: "Card title override",
               show_cleaner_when: "Robot vs power supply image",
-              show_schedule: "Show schedule panel (requires helpers — see examples/)",
-              schedule_source: "Schedule backend (auto = integration when Dolphin device selected)",
+              show_schedule: "Show schedule panel",
+              schedule_source: "Schedule backend (Auto = integration when Dolphin device is set)",
               entity_schedule_enabled: "Schedule — enabled (input_boolean)",
               entity_schedule_time: "Schedule — start time (input_datetime, time only)",
               entity_schedule_duration: "Schedule — duration (input_select: 1 hour / 2 hours)",
