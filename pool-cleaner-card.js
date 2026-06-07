@@ -70,6 +70,66 @@
     return hass.states[entityId];
   }
 
+  function findScheduleEntityId(hass, deviceId, manualId) {
+    if (manualId) return manualId;
+    const registry = hass?.entities || {};
+    if (deviceId) {
+      for (const [eid, ent] of Object.entries(registry)) {
+        if (ent.device_id !== deviceId) continue;
+        const uid = ent.unique_id || "";
+        if (uid.endsWith("_schedule")) return eid;
+      }
+      for (const [eid, ent] of Object.entries(registry)) {
+        if (ent.device_id === deviceId && eid.includes("cleaner_schedule")) {
+          return eid;
+        }
+      }
+    }
+    const candidates = [];
+    for (const eid of Object.keys(hass?.states || {})) {
+      if (!eid.includes("cleaner_schedule")) continue;
+      const reg = registry[eid];
+      if (deviceId && reg?.device_id && reg.device_id !== deviceId) continue;
+      candidates.push(eid);
+    }
+    if (candidates.length === 1) return candidates[0];
+    for (const eid of candidates) {
+      if (deviceId && registry[eid]?.device_id === deviceId) return eid;
+    }
+    return null;
+  }
+
+  function scheduleEnabledFromState(st) {
+    if (!st) return null;
+    const attrs = st.attributes || {};
+    if (st.state === "on") return true;
+    if (st.state === "off") {
+      if (attrs.enabled === true || attrs.enabled === "true") return true;
+      return false;
+    }
+    if (attrs.enabled === true || attrs.enabled === "true") return true;
+    if (attrs.enabled === false || attrs.enabled === "false") return false;
+    return null;
+  }
+
+  function parseScheduleStateFromEntity(st, empty) {
+    if (!st) return empty;
+    const a = st.attributes || {};
+    const legacyDays = parseScheduleDays(a.days);
+    const enabled = scheduleEnabledFromState(st);
+    return {
+      enabled: enabled === null ? false : enabled,
+      enabledKnown: enabled !== null,
+      run1Days: a.run1_days != null ? parseScheduleDays(a.run1_days) : legacyDays,
+      run1Time: String(a.run1_time || "09:00").slice(0, 5),
+      run1Duration: durationLabelFromMinutes(a.run1_duration_minutes),
+      run2Enabled: Boolean(a.run2_enabled),
+      run2Days: a.run2_days != null ? parseScheduleDays(a.run2_days) : legacyDays,
+      run2Time: String(a.run2_time || "17:00").slice(0, 5),
+      run2Duration: durationLabelFromMinutes(a.run2_duration_minutes),
+    };
+  }
+
   function resolveEntities(hass, config) {
     const manual = {
       power: config.entity_power || null,
@@ -105,12 +165,7 @@
       }
     }
     if (!found.schedule) {
-      for (const [eid, ent] of Object.entries(registry)) {
-        if (ent.device_id === devId && (ent.unique_id || "").endsWith("_schedule")) {
-          found.schedule = eid;
-          break;
-        }
-      }
+      found.schedule = findScheduleEntityId(hass, devId, config.entity_schedule);
     }
     return {
       ...found,
@@ -294,9 +349,10 @@
   }
 
   function readIntegrationSchedule(hass, scheduleEntityId) {
-    const st = entityState(hass, scheduleEntityId);
     const empty = {
       enabled: false,
+      enabledKnown: false,
+      pending: false,
       run1Days: new Set(),
       run1Time: "09:00",
       run1Duration: "2 hours",
@@ -305,22 +361,18 @@
       run2Time: "17:00",
       run2Duration: "1 hour",
     };
-    if (!st) return empty;
-    const a = st.attributes || {};
-    const legacyDays = parseScheduleDays(a.days);
-    return {
-      enabled: st.state === "on",
-      run1Days: a.run1_days != null ? parseScheduleDays(a.run1_days) : legacyDays,
-      run1Time: String(a.run1_time || "09:00").slice(0, 5),
-      run1Duration: durationLabelFromMinutes(a.run1_duration_minutes),
-      run2Enabled: Boolean(a.run2_enabled),
-      run2Days: a.run2_days != null ? parseScheduleDays(a.run2_days) : legacyDays,
-      run2Time: String(a.run2_time || "17:00").slice(0, 5),
-      run2Duration: durationLabelFromMinutes(a.run2_duration_minutes),
-    };
+    if (!scheduleEntityId) return empty;
+    const st = entityState(hass, scheduleEntityId);
+    if (!st) {
+      return { ...empty, pending: true };
+    }
+    return parseScheduleStateFromEntity(st, empty);
   }
 
   function formatScheduleSummaryFromState(state) {
+    if (state.pending && !state.enabled) {
+      return state.run1Time ? `Schedule · ${state.run1Time}` : "Schedule";
+    }
     if (!state.enabled) return "Schedule off";
     if (!state.run2Enabled) return `On · ${state.run1Time}`;
     return `On · ${state.run1Time} & ${state.run2Time}`;
@@ -433,8 +485,19 @@
       }
     }
 
+    firstUpdated() {
+      this._restoreSchedDraftFromStorage();
+    }
+
     updated(changedProperties) {
       super.updated(changedProperties);
+      if (
+        changedProperties.has("config") &&
+        this.hass &&
+        !this._schedDraft
+      ) {
+        this._restoreSchedDraftFromStorage();
+      }
       if (this._pending && changedProperties.has("hass")) {
         this._resolvePendingIfReady();
       }
@@ -442,6 +505,7 @@
         const cfg = mergeConfig(this.config);
         const entities = resolveEntities(this.hass, cfg);
         const live = readIntegrationSchedule(this.hass, entities.schedule);
+        if (live.pending) return;
         const d = this._schedDraft;
         const liveDays1 = formatScheduleDays(live.run1Days);
         const draftDays1 = formatScheduleDays(d.run1Days);
@@ -455,14 +519,69 @@
           draftDays2 === liveDays2
         ) {
           this._schedDraft = null;
+          this._syncSchedDraftStorage(null);
         }
       }
+    }
+
+    _schedDraftStorageKey() {
+      const device = mergeConfig(this.config).device;
+      return device ? `pool-cleaner-card:sched:${device}` : null;
+    }
+
+    _restoreSchedDraftFromStorage() {
+      const key = this._schedDraftStorageKey();
+      if (!key || this._schedDraft) return;
+      try {
+        const raw = sessionStorage.getItem(key);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        this._schedDraft = {
+          enabled: Boolean(parsed.enabled),
+          run1Time: parsed.run1Time || "09:00",
+          run1Duration: parsed.run1Duration || "2 hours",
+          run2Enabled: Boolean(parsed.run2Enabled),
+          run2Time: parsed.run2Time || "17:00",
+          run2Duration: parsed.run2Duration || "2 hours",
+          run1Days: parseScheduleDays(parsed.run1Days),
+          run2Days: parseScheduleDays(parsed.run2Days),
+        };
+      } catch (_err) {
+        /* ignore corrupt cache */
+      }
+    }
+
+    _syncSchedDraftStorage(draft) {
+      const key = this._schedDraftStorageKey();
+      if (!key) return;
+      if (!draft) {
+        sessionStorage.removeItem(key);
+        return;
+      }
+      sessionStorage.setItem(
+        key,
+        JSON.stringify({
+          enabled: draft.enabled,
+          run1Time: draft.run1Time,
+          run1Duration: draft.run1Duration,
+          run2Enabled: draft.run2Enabled,
+          run2Time: draft.run2Time,
+          run2Duration: draft.run2Duration,
+          run1Days: formatScheduleDays(draft.run1Days),
+          run2Days: formatScheduleDays(draft.run2Days),
+        })
+      );
     }
 
     _integrationScheduleState(hass, cfg, entities) {
       const live = readIntegrationSchedule(hass, entities.schedule);
       if (!this._schedDraft) return live;
-      return { ...live, ...this._schedDraft };
+      return {
+        ...live,
+        ...this._schedDraft,
+        pending: false,
+        enabledKnown: true,
+      };
     }
 
     _patchSchedDraft(patch) {
@@ -487,6 +606,7 @@
         next.run2Days = parseScheduleDays(patch.days);
       }
       this._schedDraft = next;
+      this._syncSchedDraftStorage(next);
     }
 
     async _callService(domain, service, data) {
@@ -1670,6 +1790,10 @@
               },
             },
             {
+              name: "entity_schedule",
+              selector: { entity: { domain: "sensor" } },
+            },
+            {
               name: "entity_schedule_enabled",
               selector: { entity: { domain: "input_boolean" } },
             },
@@ -1714,6 +1838,8 @@
               show_cleaner_when: "Robot vs power supply image",
               show_schedule: "Show schedule panel",
               schedule_source: "Schedule backend (Auto = integration when Dolphin device is set)",
+              entity_schedule:
+                "Schedule sensor (optional — e.g. sensor.triton_ps_plus_cleaner_schedule)",
               entity_schedule_enabled: "Schedule — enabled (input_boolean)",
               entity_schedule_time: "Schedule — start time (input_datetime, time only)",
               entity_schedule_duration: "Schedule — duration (input_select: 1 hour / 2 hours)",
