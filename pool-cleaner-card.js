@@ -62,6 +62,7 @@
     connected: "_ps_state_poll_ok",
     surface: "_cleaning_surface",
     working: "_working_status",
+    schedule: "_schedule",
   };
 
   function entityState(hass, entityId) {
@@ -89,6 +90,7 @@
       connected: null,
       surface: null,
       working: null,
+      schedule: null,
     };
     const registry = hass.entities || {};
     for (const [eid, ent] of Object.entries(registry)) {
@@ -238,7 +240,29 @@
     { id: 6, label: "S" },
   ]);
 
-  function scheduleConfigured(config) {
+  function usesIntegrationSchedule(hass, config) {
+    const cfg = mergeConfig(config);
+    if (cfg.schedule_source === "helpers") return false;
+    if (cfg.schedule_source === "integration") return Boolean(cfg.device);
+    return Boolean(
+      cfg.device && hass?.services?.maytronics_dolphin?.set_schedule
+    );
+  }
+
+  function scheduleSlot2Configured(hass, config) {
+    if (usesIntegrationSchedule(hass, config)) return true;
+    const c = config || {};
+    return Boolean(
+      c.entity_schedule_2_enabled &&
+        c.entity_schedule_time_2 &&
+        c.entity_schedule_duration_2
+    );
+  }
+
+  function scheduleConfigured(hass, config) {
+    if (usesIntegrationSchedule(hass, config)) {
+      return Boolean(mergeConfig(config).device);
+    }
     const c = config || {};
     return Boolean(
       c.entity_schedule_enabled &&
@@ -247,6 +271,44 @@
         c.entity_schedule_days &&
         c.entity_script_timed
     );
+  }
+
+  function durationLabelFromMinutes(mins) {
+    return Number(mins) === 60 ? "1 hour" : "2 hours";
+  }
+
+  function durationMinutesFromLabel(label) {
+    return label === "1 hour" ? 60 : 120;
+  }
+
+  function readIntegrationSchedule(hass, scheduleEntityId) {
+    const st = entityState(hass, scheduleEntityId);
+    const empty = {
+      enabled: false,
+      days: new Set(),
+      run1Time: "09:00",
+      run1Duration: "2 hours",
+      run2Enabled: false,
+      run2Time: "17:00",
+      run2Duration: "1 hour",
+    };
+    if (!st) return empty;
+    const a = st.attributes || {};
+    return {
+      enabled: st.state === "on",
+      days: parseScheduleDays(a.days),
+      run1Time: String(a.run1_time || "09:00").slice(0, 5),
+      run1Duration: durationLabelFromMinutes(a.run1_duration_minutes),
+      run2Enabled: Boolean(a.run2_enabled),
+      run2Time: String(a.run2_time || "17:00").slice(0, 5),
+      run2Duration: durationLabelFromMinutes(a.run2_duration_minutes),
+    };
+  }
+
+  function formatScheduleSummaryFromState(state) {
+    if (!state.enabled) return "Off";
+    if (!state.run2Enabled) return `On · ${state.run1Time}`;
+    return `On · ${state.run1Time} & ${state.run2Time}`;
   }
 
   function parseScheduleDays(raw) {
@@ -272,11 +334,26 @@
     return "09:00";
   }
 
+  function formatScheduleSummary(hass, cfg, entities) {
+    if (usesIntegrationSchedule(hass, cfg)) {
+      return formatScheduleSummaryFromState(
+        readIntegrationSchedule(hass, entities.schedule)
+      );
+    }
+    if (!isOn(hass, cfg.entity_schedule_enabled)) return "Off";
+    const t1 = scheduleTimeValue(hass, cfg.entity_schedule_time);
+    if (!scheduleSlot2Configured(hass, cfg)) return `On · ${t1}`;
+    if (!isOn(hass, cfg.entity_schedule_2_enabled)) return `On · ${t1}`;
+    const t2 = scheduleTimeValue(hass, cfg.entity_schedule_time_2);
+    return `On · ${t1} & ${t2}`;
+  }
+
   function mergeConfig(config) {
     return {
       ...DEFAULTS,
       show_cleaner_when: "auto",
       show_schedule: false,
+      schedule_source: "auto",
       ...config,
     };
   }
@@ -303,8 +380,9 @@
 
     getCardSize() {
       const cfg = mergeConfig(this.config);
-      if (cfg.show_schedule && scheduleConfigured(cfg)) {
-        return this._scheduleExpanded ? 7 : 5;
+      if (cfg.show_schedule && scheduleConfigured(this.hass, cfg)) {
+        if (!this._scheduleExpanded) return 5;
+        return scheduleSlot2Configured(this.hass, cfg) ? 9 : 7;
       }
       return 4;
     }
@@ -349,38 +427,176 @@
       await this.hass.callService(domain, service, data);
     }
 
+    async _dolphinSchedule(data) {
+      const cfg = mergeConfig(this.config);
+      if (!cfg.device || this._busy) return;
+      await this._callService("maytronics_dolphin", "set_schedule", {
+        device_id: cfg.device,
+        ...data,
+      });
+    }
+
     async _toggleScheduleEnabled() {
       const cfg = mergeConfig(this.config);
-      if (!cfg.entity_schedule_enabled || this._busy) return;
+      if (this._busy) return;
+      if (usesIntegrationSchedule(this.hass, cfg)) {
+        const entities = resolveEntities(this.hass, cfg);
+        const st = readIntegrationSchedule(this.hass, entities.schedule);
+        await this._dolphinSchedule({ enabled: !st.enabled });
+        return;
+      }
+      if (!cfg.entity_schedule_enabled) return;
       const on = isOn(this.hass, cfg.entity_schedule_enabled);
       await this._callService("input_boolean", on ? "turn_off" : "turn_on", {
         entity_id: cfg.entity_schedule_enabled,
       });
     }
 
-    async _setScheduleTime(ev) {
+    async _setScheduleTime(ev, entityKey = "entity_schedule_time") {
       const cfg = mergeConfig(this.config);
-      if (!cfg.entity_schedule_time || this._busy) return;
+      if (this._busy) return;
       const value = ev.target.value;
       if (!value) return;
+      if (usesIntegrationSchedule(this.hass, cfg)) {
+        const patch =
+          entityKey === "entity_schedule_time_2"
+            ? { run2_time: value }
+            : { run1_time: value };
+        await this._dolphinSchedule(patch);
+        return;
+      }
+      const entity_id = cfg[entityKey];
+      if (!entity_id) return;
       await this._callService("input_datetime", "set_datetime", {
-        entity_id: cfg.entity_schedule_time,
+        entity_id,
         time: `${value}:00`,
       });
     }
 
-    async _setScheduleDuration(option) {
+    async _setScheduleDuration(
+      option,
+      entityKey = "entity_schedule_duration"
+    ) {
       const cfg = mergeConfig(this.config);
-      if (!cfg.entity_schedule_duration || this._busy) return;
+      if (this._busy) return;
+      if (usesIntegrationSchedule(this.hass, cfg)) {
+        const mins = durationMinutesFromLabel(option);
+        const patch =
+          entityKey === "entity_schedule_duration_2"
+            ? { run2_duration_minutes: mins }
+            : { run1_duration_minutes: mins };
+        await this._dolphinSchedule(patch);
+        return;
+      }
+      const entity_id = cfg[entityKey];
+      if (!entity_id) return;
       await this._callService("input_select", "select_option", {
-        entity_id: cfg.entity_schedule_duration,
+        entity_id,
         option,
       });
     }
 
+    async _toggleSchedule2Enabled() {
+      const cfg = mergeConfig(this.config);
+      if (this._busy) return;
+      if (usesIntegrationSchedule(this.hass, cfg)) {
+        const entities = resolveEntities(this.hass, cfg);
+        const st = readIntegrationSchedule(this.hass, entities.schedule);
+        await this._dolphinSchedule({ run2_enabled: !st.run2Enabled });
+        return;
+      }
+      if (!cfg.entity_schedule_2_enabled) return;
+      const on = isOn(this.hass, cfg.entity_schedule_2_enabled);
+      await this._callService("input_boolean", on ? "turn_off" : "turn_on", {
+        entity_id: cfg.entity_schedule_2_enabled,
+      });
+    }
+
+    _renderScheduleSlot(
+      cfg,
+      {
+        title,
+        enabled,
+        masterEnabled,
+        timeEntity,
+        durationEntity,
+        timeVal,
+        duration,
+        onTimeChange,
+        onDuration,
+        showSlotEnable = false,
+        slotEnabled = false,
+        onSlotEnable,
+      }
+    ) {
+      const disabled = this._busy || !masterEnabled;
+      return html`
+        <div class="schedule-slot">
+          <div class="schedule-slot-head">
+            <span class="schedule-slot-title">${title}</span>
+            ${showSlotEnable
+              ? html`
+                  <label class="sched-slot-toggle">
+                    <input
+                      type="checkbox"
+                      .checked=${slotEnabled}
+                      ?disabled=${this._busy || !masterEnabled}
+                      @change=${onSlotEnable}
+                    />
+                    <span>${slotEnabled ? "On" : "Off"}</span>
+                  </label>
+                `
+              : ""}
+          </div>
+          <div class="schedule-row">
+            <span class="sched-label">Start</span>
+            <input
+              type="time"
+              class="sched-time"
+              .value=${timeVal}
+              ?disabled=${disabled || (showSlotEnable && !slotEnabled)}
+              @change=${onTimeChange}
+            />
+          </div>
+          <div class="schedule-row">
+            <span class="sched-label">Run</span>
+            <div class="seg">
+              <button
+                type="button"
+                class="seg-btn ${duration === "1 hour" ? "active" : ""}"
+                ?disabled=${disabled || (showSlotEnable && !slotEnabled)}
+                @click=${() => onDuration("1 hour")}
+              >
+                1 h
+              </button>
+              <button
+                type="button"
+                class="seg-btn ${duration === "2 hours" ? "active" : ""}"
+                ?disabled=${disabled || (showSlotEnable && !slotEnabled)}
+                @click=${() => onDuration("2 hours")}
+              >
+                2 h
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
     async _toggleScheduleDay(dayId) {
       const cfg = mergeConfig(this.config);
-      if (!cfg.entity_schedule_days || this._busy) return;
+      if (this._busy) return;
+      if (usesIntegrationSchedule(this.hass, cfg)) {
+        const entities = resolveEntities(this.hass, cfg);
+        const st = readIntegrationSchedule(this.hass, entities.schedule);
+        const current = new Set(st.days);
+        const key = String(dayId);
+        if (current.has(key)) current.delete(key);
+        else current.add(key);
+        await this._dolphinSchedule({ days: formatScheduleDays(current) });
+        return;
+      }
+      if (!cfg.entity_schedule_days) return;
       const current = parseScheduleDays(
         entityState(this.hass, cfg.entity_schedule_days)?.state
       );
@@ -396,16 +612,25 @@
     async _runTimed(minutes) {
       const cfg = mergeConfig(this.config);
       const entities = resolveEntities(this.hass, cfg);
-      if (!entities.power || !cfg.entity_script_timed || this._busy) return;
+      if (!entities.power || this._busy) return;
       this._busy = true;
       try {
-        await this._callService("script", "turn_on", {
-          entity_id: cfg.entity_script_timed,
-          variables: {
-            power_entity: entities.power,
+        if (usesIntegrationSchedule(this.hass, cfg) && cfg.device) {
+          await this._callService("maytronics_dolphin", "run_timed", {
+            device_id: cfg.device,
             duration_minutes: minutes,
-          },
-        });
+          });
+        } else if (cfg.entity_script_timed) {
+          await this._callService("script", "turn_on", {
+            entity_id: cfg.entity_script_timed,
+            variables: {
+              power_entity: entities.power,
+              duration_minutes: minutes,
+            },
+          });
+        } else {
+          return;
+        }
         this._pending = "on";
         this._pendingSince = Date.now();
       } finally {
@@ -416,26 +641,53 @@
     _renderSchedule(cfg, entities) {
       if (!cfg.show_schedule) return html``;
 
-      if (!scheduleConfigured(cfg)) {
+      if (!scheduleConfigured(this.hass, cfg)) {
         return html`
           <div class="schedule schedule-hint">
             <span class="schedule-title">Schedule</span>
             <p class="schedule-msg">
-              Add helpers from
-              <code>examples/pool-cleaner-schedule.yaml</code>, then map them in
-              card options.
+              Pick your <strong>Dolphin device</strong> and use integration
+              v1.0.14+ schedule, or add helpers from
+              <code>examples/pool-cleaner-schedule.yaml</code>.
             </p>
           </div>
         `;
       }
 
-      const enabled = isOn(this.hass, cfg.entity_schedule_enabled);
-      const duration =
-        entityState(this.hass, cfg.entity_schedule_duration)?.state || "2 hours";
-      const days = parseScheduleDays(
-        entityState(this.hass, cfg.entity_schedule_days)?.state
-      );
-      const timeVal = scheduleTimeValue(this.hass, cfg.entity_schedule_time);
+      const integration = usesIntegrationSchedule(this.hass, cfg);
+      const ist = integration
+        ? readIntegrationSchedule(this.hass, entities.schedule)
+        : null;
+      const enabled = integration
+        ? ist.enabled
+        : isOn(this.hass, cfg.entity_schedule_enabled);
+      const duration = integration
+        ? ist.run1Duration
+        : entityState(this.hass, cfg.entity_schedule_duration)?.state || "2 hours";
+      const days = integration
+        ? ist.days
+        : parseScheduleDays(
+            entityState(this.hass, cfg.entity_schedule_days)?.state
+          );
+      const timeVal = integration
+        ? ist.run1Time
+        : scheduleTimeValue(this.hass, cfg.entity_schedule_time);
+      const slot2 = scheduleSlot2Configured(this.hass, cfg);
+      const slot2Enabled = integration
+        ? ist.run2Enabled
+        : slot2 && isOn(this.hass, cfg.entity_schedule_2_enabled);
+      const duration2 = integration
+        ? ist.run2Duration
+        : slot2
+          ? entityState(this.hass, cfg.entity_schedule_duration_2)?.state ||
+            "2 hours"
+          : "2 hours";
+      const timeVal2 = integration
+        ? ist.run2Time
+        : slot2
+          ? scheduleTimeValue(this.hass, cfg.entity_schedule_time_2)
+          : "17:00";
+      const summary = formatScheduleSummary(this.hass, cfg, entities);
 
       return html`
         <div class="schedule ${this._scheduleExpanded ? "open" : "collapsed"}">
@@ -452,9 +704,7 @@
               >
             </button>
             ${!this._scheduleExpanded
-              ? html`<span class="schedule-summary"
-                  >${enabled ? "On" : "Off"}</span
-                >`
+              ? html`<span class="schedule-summary">${summary}</span>`
               : ""}
           </div>
 
@@ -471,38 +721,35 @@
             <span>${enabled ? "On" : "Off"}</span>
           </label>
 
-          <div class="schedule-row">
-            <span class="sched-label">Start</span>
-            <input
-              type="time"
-              class="sched-time"
-              .value=${timeVal}
-              ?disabled=${this._busy || !enabled}
-              @change=${this._setScheduleTime}
-            />
-          </div>
-
-          <div class="schedule-row">
-            <span class="sched-label">Run</span>
-            <div class="seg">
-              <button
-                type="button"
-                class="seg-btn ${duration === "1 hour" ? "active" : ""}"
-                ?disabled=${this._busy || !enabled}
-                @click=${() => this._setScheduleDuration("1 hour")}
-              >
-                1 h
-              </button>
-              <button
-                type="button"
-                class="seg-btn ${duration === "2 hours" ? "active" : ""}"
-                ?disabled=${this._busy || !enabled}
-                @click=${() => this._setScheduleDuration("2 hours")}
-              >
-                2 h
-              </button>
-            </div>
-          </div>
+          ${this._renderScheduleSlot(cfg, {
+            title: slot2 ? "Run 1" : "Daily run",
+            enabled,
+            masterEnabled: enabled,
+            timeEntity: cfg.entity_schedule_time,
+            durationEntity: cfg.entity_schedule_duration,
+            timeVal,
+            duration,
+            onTimeChange: (ev) => this._setScheduleTime(ev),
+            onDuration: (opt) => this._setScheduleDuration(opt),
+          })}
+          ${slot2
+            ? this._renderScheduleSlot(cfg, {
+                title: "Run 2",
+                enabled: slot2Enabled,
+                masterEnabled: enabled,
+                timeEntity: cfg.entity_schedule_time_2,
+                durationEntity: cfg.entity_schedule_duration_2,
+                timeVal: timeVal2,
+                duration: duration2,
+                showSlotEnable: true,
+                slotEnabled: slot2Enabled,
+                onSlotEnable: () => this._toggleSchedule2Enabled(),
+                onTimeChange: (ev) =>
+                  this._setScheduleTime(ev, "entity_schedule_time_2"),
+                onDuration: (opt) =>
+                  this._setScheduleDuration(opt, "entity_schedule_duration_2"),
+              })
+            : ""}
 
           <div class="schedule-row days-row">
             <span class="sched-label">Days</span>
@@ -1043,6 +1290,35 @@
         .schedule.collapsed .schedule-summary {
           color: var(--primary-color);
         }
+        .schedule-slot {
+          margin-top: 4px;
+          padding: 8px 0 4px;
+          border-top: 1px solid var(--divider-color, rgba(255, 255, 255, 0.08));
+        }
+        .schedule-slot:first-of-type {
+          border-top: none;
+          padding-top: 0;
+        }
+        .schedule-slot-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-bottom: 6px;
+        }
+        .schedule-slot-title {
+          font-size: 0.72rem;
+          font-weight: 600;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          color: var(--secondary-text-color);
+        }
+        .sched-slot-toggle {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 0.78rem;
+          cursor: pointer;
+        }
         .schedule-title {
           font-size: 0.78rem;
           font-weight: 600;
@@ -1257,6 +1533,15 @@
               selector: { boolean: {} },
             },
             {
+              name: "schedule_source",
+              type: "select",
+              options: [
+                ["auto", "Auto (integration if Dolphin device set)"],
+                ["integration", "Integration schedule (v1.0.14+)"],
+                ["helpers", "YAML helpers + automations"],
+              ],
+            },
+            {
               name: "entity_schedule_enabled",
               selector: { entity: { domain: "input_boolean" } },
             },
@@ -1271,6 +1556,18 @@
             {
               name: "entity_schedule_days",
               selector: { entity: { domain: "input_text" } },
+            },
+            {
+              name: "entity_schedule_2_enabled",
+              selector: { entity: { domain: "input_boolean" } },
+            },
+            {
+              name: "entity_schedule_time_2",
+              selector: { entity: { domain: "input_datetime" } },
+            },
+            {
+              name: "entity_schedule_duration_2",
+              selector: { entity: { domain: "input_select" } },
             },
             {
               name: "entity_script_timed",
@@ -1288,10 +1585,14 @@
               name: "Card title override",
               show_cleaner_when: "Robot vs power supply image",
               show_schedule: "Show schedule panel (requires helpers — see examples/)",
+              schedule_source: "Schedule backend (auto = integration when Dolphin device selected)",
               entity_schedule_enabled: "Schedule — enabled (input_boolean)",
               entity_schedule_time: "Schedule — start time (input_datetime, time only)",
               entity_schedule_duration: "Schedule — duration (input_select: 1 hour / 2 hours)",
               entity_schedule_days: "Schedule — days (input_text, comma weekdays 0=Mon)",
+              entity_schedule_2_enabled: "Schedule run 2 — enabled (input_boolean)",
+              entity_schedule_time_2: "Schedule run 2 — start time (input_datetime)",
+              entity_schedule_duration_2: "Schedule run 2 — duration (input_select)",
               entity_script_timed: "Timed run script (script.pool_cleaner_timed_run)",
               image_robot: "Robot image URL",
               image_psu: "Power supply image URL",
@@ -1319,7 +1620,7 @@
     type: "pool-cleaner-card",
     name: "Pool Cleaner Card",
     description:
-      "Maytronics Dolphin — power, status, optional HA schedule (1h/2h, days, time)",
+      "Maytronics Dolphin — power, status, optional HA schedule (1–2 daily runs)",
     preview: true,
     documentationURL:
       "https://github.com/randrcomputers/ha-pool-cleaner-card#readme",

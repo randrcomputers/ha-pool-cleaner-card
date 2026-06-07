@@ -3,7 +3,6 @@
 Lovelace card for the **[Maytronics Dolphin](https://github.com/randrcomputers/ha-maytronics-dolphin)** integration — power toggle, status, BLE icon, optional blue LED pulse on your robot artwork, and PSU button ring — using images from **`/local/`**.
 
 ## Previews
-<img width="497" height="458" alt="image" src="https://github.com/user-attachments/assets/0031bf8c-7ff8-465f-94eb-ae7aa473a1d7" />
 
 | Cleaner (cleaning) | Power supply / idle |
 | :---: | :---: |
@@ -73,11 +72,25 @@ Power button still reflects the **Power** switch. Robot artwork and LED overlay 
 
 ## Schedule (Home Assistant — not the phone app)
 
-The card can drive a **simple HA schedule**: pick **days**, **start time**, and **1 h / 2 h** run length. Home Assistant turns the cleaner **on**, waits, then **off** — no MyDolphin APK schedule needed.
+The card can drive a **simple HA schedule**: pick **days**, one or two **start times**, and **1 h / 2 h** run length. Home Assistant turns the cleaner **on**, waits, then **off**.
 
-**Important:** The card only edits **helpers**. It does **not** run the schedule by itself. You must install the **script + automation** below (or the scheduled time will never fire).
+### Recommended: integration schedule (Dolphin v1.0.14+)
 
-### What to install (one YAML package)
+If the **Maytronics Dolphin** integration is **v1.0.14+** and the card has your **Dolphin device** selected:
+
+1. Enable **Show schedule panel** on the card.
+2. Leave **Schedule backend** on **Auto** (default).
+3. **No YAML package required** — schedule is stored in the integration.
+
+Update integration + card, reload resources (**Ctrl+F5**). Optional: remove or disable old `pool-cleaner-schedule.yaml` automations so only one scheduler runs.
+
+### Legacy: YAML helpers + automations
+
+Use this if you prefer explicit automations or run an older integration. Set card **Schedule backend** to **helpers** and map the helper entities.
+
+**Important (legacy path):** The card only edits **helpers**. You must install the **script + automation** below.
+
+### What to install (legacy YAML package)
 
 Copy **`examples/pool-cleaner-schedule.yaml`** to  
 `config/packages/pool-cleaner-schedule.yaml`
@@ -86,12 +99,16 @@ That file creates everything the card expects:
 
 | Type | Entity | Purpose |
 | --- | --- | --- |
-| Helper | `input_boolean.pool_cleaner_schedule_enabled` | Schedule on/off (card toggle) |
-| Helper | `input_datetime.pool_cleaner_schedule_time` | Daily start time |
-| Helper | `input_select.pool_cleaner_schedule_duration` | `1 hour` or `2 hours` |
-| Helper | `input_text.pool_cleaner_schedule_days` | Weekdays `0`–`6` (Mon–Sun), comma-separated |
+| Helper | `input_boolean.pool_cleaner_schedule_enabled` | Master schedule on/off |
+| Helper | `input_datetime.pool_cleaner_schedule_time` | **Run 1** start time |
+| Helper | `input_select.pool_cleaner_schedule_duration` | **Run 1** duration (`1 hour` / `2 hours`) |
+| Helper | `input_boolean.pool_cleaner_schedule_2_enabled` | **Run 2** on/off |
+| Helper | `input_datetime.pool_cleaner_schedule_time_2` | **Run 2** start time |
+| Helper | `input_select.pool_cleaner_schedule_duration_2` | **Run 2** duration |
+| Helper | `input_text.pool_cleaner_schedule_days` | Shared weekdays `0`–`6` (Mon–Sun) |
 | Script | `script.pool_cleaner_timed_run` | Power on → delay → power off |
-| Automation | `automation.pool_cleaner_scheduled_run` | Fires at start time on selected days |
+| Automation | `automation.pool_cleaner_scheduled_run` | Fires at **run 1** time |
+| Automation | `automation.pool_cleaner_scheduled_run_2` | Fires at **run 2** time (when run 2 enabled) |
 
 `configuration.yaml` must load packages:
 
@@ -103,12 +120,14 @@ homeassistant:
 ### One-time setup
 
 1. Copy **`examples/pool-cleaner-schedule.yaml`** → `config/packages/pool-cleaner-schedule.yaml`.
-2. In that file, set **`power:`** (automation `variables` block) to your Dolphin **Power** switch, e.g. `switch.triton_ps_plus_power`.
+2. In that file, set **`power:`** in **both** automations to your Dolphin **Power** switch, e.g. `switch.triton_ps_plus_power`.
 3. **Developer tools → YAML → Reload** input helpers, scripts, and automations (or restart HA).
-4. Edit the **Pool Cleaner Card** → enable **Show schedule panel** and map all five entities + the script (see table above).
+4. Edit the **Pool Cleaner Card** → enable **Show schedule panel** and map the schedule entities + script (see table above). Map the three **run 2** entities to show a second daily time on the card.
 5. Reload dashboard resources (**Ctrl+F5**).
 
-**Do not** create only the helpers in the UI — you still need **`script.pool_cleaner_timed_run`** and **`automation.pool_cleaner_scheduled_run`** from the example (or equivalent YAML).
+**Do not** create only the helpers in the UI — you still need **`script.pool_cleaner_timed_run`** and the **automations** from the example (or equivalent YAML).
+
+**Already on run 1 only?** Merge the new helpers and **`pool_cleaner_scheduled_run_2`** automation from `examples/pool-cleaner-schedule.yaml`, reload YAML, then map the three run 2 entities in the card editor.
 
 See also **`examples/dashboard-card-with-schedule.yaml`** for a full card YAML snippet.
 
@@ -116,19 +135,19 @@ See also **`examples/dashboard-card-with-schedule.yaml`** for a full card YAML s
 
 | Control | What it does |
 | --- | --- |
-| **Schedule On/Off** | Enables the daily automation |
-| **Start** | Time of day to start (local time) |
-| **Run 1 h / 2 h** | How long power stays on before auto-off |
-| **Days** | M–S toggles (0=Monday … 6=Sunday) |
+| **Schedule** (collapsed) | Shows **On · 8:09 & 17:00** when both runs are enabled |
+| **Enable** | Master on/off for all scheduled runs |
+| **Run 1 / Run 2** | Each has **Start**, **1 h / 2 h**, and (run 2) its own **On** toggle |
+| **Days** | Shared M–S toggles for both runs |
 | **Run 1 h / Run 2 h (Now)** | Start immediately; auto-off after duration |
 
 ### How repeats work (no daily reset)
 
-There is **nothing to reset** each night. The automation runs **once per day** when **all** of these are true:
+There is **nothing to reset** each night. Each enabled run fires **once per day** when **all** of these are true:
 
-1. Clock matches **Start** (`input_datetime.pool_cleaner_schedule_time`) — checked every minute.
-2. **Schedule** toggle is **On**.
-3. **Today** is one of the day chips you selected (`0` = Mon … `6` = Sun).
+1. Clock matches that run’s **Start** time — checked every minute (no automation reload when you change time).
+2. Master **Enable** is **On** (and **Run 2 → On** for the second slot).
+3. **Today** is one of the selected **Days**.
 
 Tomorrow at the same time, the same checks run again automatically. You only change helpers on the card; no cron job or manual reload for the next day.
 
