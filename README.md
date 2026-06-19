@@ -4,10 +4,6 @@ Lovelace card for the **[Maytronics Dolphin](https://github.com/randrcomputers/h
 
 ## Previews
 
-<img width="483" height="318" alt="Screenshot 2026-06-07 135512" src="https://github.com/user-attachments/assets/71669705-5270-45cc-b7b4-90cd6e270629" />
-<img width="489" height="652" alt="Screenshot 2026-06-07 135836" src="https://github.com/user-attachments/assets/bceb9aba-c559-4452-be49-38797a01f694" />
-
-
 | Cleaner (cleaning) | Power supply / idle |
 | :---: | :---: |
 | ![Cleaner preview](media/preview-cleaner.gif) | ![Power supply preview](media/preview-power-supply.gif) |
