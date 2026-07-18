@@ -76,7 +76,7 @@ The card can drive a **simple HA schedule**: pick **days**, one or two **start t
 
 ### Recommended: integration schedule (Dolphin v1.15.0+)
 
-If the **Maytronics Dolphin** integration is **v1.15.0+** (v1.14.0+ for basic schedule) and the card has your **Dolphin device** selected:
+If the **Maytronics Dolphin** integration is **v1.15.0+** (v1.14.0+ for basic schedule; **v1.17.0+** for `active` / `scheduled` / `off` schedule sensor values) and the card has your **Dolphin device** selected:
 
 1. Enable **Show schedule panel** on the card.
 2. Leave **Schedule backend** on **Auto** (default).

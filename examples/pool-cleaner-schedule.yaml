@@ -1,23 +1,36 @@
 # Save as: config/packages/pool-cleaner-schedule.yaml
 # configuration.yaml must have:  packages: !include_dir_named packages
 #
-# Creates helpers + script + automation for the Pool Cleaner Card schedule panel.
+# Creates helpers + script + automations for the Pool Cleaner Card schedule panel.
 # Edit `power:` below to your Dolphin Power switch entity_id.
 
 input_boolean:
   pool_cleaner_schedule_enabled:
     name: Pool cleaner schedule enabled
     icon: mdi:calendar-clock
+  pool_cleaner_schedule_2_enabled:
+    name: Pool cleaner schedule run 2 enabled
+    icon: mdi:calendar-clock
 
 input_datetime:
   pool_cleaner_schedule_time:
-    name: Pool cleaner start time
+    name: Pool cleaner start time (run 1)
     has_date: false
     has_time: true
+  pool_cleaner_schedule_time_2:
+    name: Pool cleaner start time (run 2)
+    has_date: false
+    has_time: true
+    initial: "17:00:00"
 
 input_select:
   pool_cleaner_schedule_duration:
-    name: Pool cleaner run duration
+    name: Pool cleaner run 1 duration
+    options:
+      - "1 hour"
+      - "2 hours"
+  pool_cleaner_schedule_duration_2:
+    name: Pool cleaner run 2 duration
     options:
       - "1 hour"
       - "2 hours"
@@ -26,7 +39,7 @@ input_text:
   pool_cleaner_schedule_days:
     name: Pool cleaner schedule days
     max: 32
-    initial: "0,1,2,3,4,5"
+    initial: "0,1,2,3,4,5,6"
 
 script:
   pool_cleaner_timed_run:
@@ -51,15 +64,27 @@ script:
 
 automation:
   - id: pool_cleaner_scheduled_run
-    alias: Pool cleaner scheduled start
-    description: Turns on at set time/day, auto off after 1h or 2h
+    alias: Pool cleaner scheduled start (run 1)
+    description: >-
+      Every minute, if clock matches run 1 time and today is a selected weekday,
+      run the timed script. No automation reload needed when you change the time.
     trigger:
-      - platform: time
-        at: input_datetime.pool_cleaner_schedule_time
+      - platform: time_pattern
+        minutes: "/1"
     condition:
       - condition: state
         entity_id: input_boolean.pool_cleaner_schedule_enabled
         state: "on"
+      - condition: template
+        value_template: >
+          {% set t = state_attr('input_datetime.pool_cleaner_schedule_time', 'time')
+             or states('input_datetime.pool_cleaner_schedule_time') %}
+          {% if t in ['unknown', 'unavailable', ''] %}
+            false
+          {% else %}
+            {% set parts = (t.split(' ')[-1] if ' ' in t else t).split(':') %}
+            {{ now().hour == parts[0] | int and now().minute == parts[1] | int }}
+          {% endif %}
       - condition: template
         value_template: >
           {% set days = states('input_text.pool_cleaner_schedule_days').split(',') | map('trim') | list %}
@@ -69,6 +94,44 @@ automation:
           power: switch.triton_ps_plus_power  # ← change to your Power switch
           mins: >
             {% if is_state('input_select.pool_cleaner_schedule_duration', '1 hour') %}60{% else %}120{% endif %}
+      - action: script.pool_cleaner_timed_run
+        data:
+          power_entity: "{{ power }}"
+          duration_minutes: "{{ mins }}"
+    mode: restart
+
+  - id: pool_cleaner_scheduled_run_2
+    alias: Pool cleaner scheduled start (run 2)
+    description: Second daily start time (optional — enable run 2 on the card).
+    trigger:
+      - platform: time_pattern
+        minutes: "/1"
+    condition:
+      - condition: state
+        entity_id: input_boolean.pool_cleaner_schedule_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.pool_cleaner_schedule_2_enabled
+        state: "on"
+      - condition: template
+        value_template: >
+          {% set t = state_attr('input_datetime.pool_cleaner_schedule_time_2', 'time')
+             or states('input_datetime.pool_cleaner_schedule_time_2') %}
+          {% if t in ['unknown', 'unavailable', ''] %}
+            false
+          {% else %}
+            {% set parts = (t.split(' ')[-1] if ' ' in t else t).split(':') %}
+            {{ now().hour == parts[0] | int and now().minute == parts[1] | int }}
+          {% endif %}
+      - condition: template
+        value_template: >
+          {% set days = states('input_text.pool_cleaner_schedule_days').split(',') | map('trim') | list %}
+          {{ now().weekday() | string in days }}
+    action:
+      - variables:
+          power: switch.triton_ps_plus_power  # ← change to your Power switch
+          mins: >
+            {% if is_state('input_select.pool_cleaner_schedule_duration_2', '1 hour') %}60{% else %}120{% endif %}
       - action: script.pool_cleaner_timed_run
         data:
           power_entity: "{{ power }}"

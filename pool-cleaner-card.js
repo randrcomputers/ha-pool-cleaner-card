@@ -102,14 +102,23 @@
   function scheduleEnabledFromState(st) {
     if (!st) return null;
     const attrs = st.attributes || {};
-    if (st.state === "on") return true;
-    if (st.state === "off") {
+    const raw = String(st.state || "").toLowerCase();
+    // Dolphin v1.17+: active (timed run) / scheduled (armed) / off
+    if (raw === "active" || raw === "scheduled" || raw === "on") return true;
+    if (raw === "off") {
       if (attrs.enabled === true || attrs.enabled === "true") return true;
       return false;
     }
     if (attrs.enabled === true || attrs.enabled === "true") return true;
     if (attrs.enabled === false || attrs.enabled === "false") return false;
     return null;
+  }
+
+  function scheduleRunActiveFromState(st) {
+    if (!st) return false;
+    const attrs = st.attributes || {};
+    if (String(st.state || "").toLowerCase() === "active") return true;
+    return attrs.run_active === true || attrs.run_active === "true";
   }
 
   function parseScheduleStateFromEntity(st, empty) {
@@ -120,6 +129,7 @@
     return {
       enabled: enabled === null ? false : enabled,
       enabledKnown: enabled !== null,
+      runActive: scheduleRunActiveFromState(st),
       run1Days: a.run1_days != null ? parseScheduleDays(a.run1_days) : legacyDays,
       run1Time: String(a.run1_time || "09:00").slice(0, 5),
       run1Duration: durationLabelFromMinutes(a.run1_duration_minutes),
@@ -268,15 +278,12 @@
 
     if (pending === "on") {
       if (!powerOn) return false;
-      if (raw === "on" || raw === "hold" || raw === "programming" || raw === "self_test") {
-        return true;
-      }
-      if (working === "at_work" || working === "finished" || working === "fault") {
-        return true;
-      }
-      if (phase === "cleaning" || phase === "done" || phase === "powered_idle") {
-        return true;
-      }
+      // HOLD/finished = previous cycle done — not a successful new start.
+      if (raw === "hold") return false;
+      if (working === "finished") return false;
+      if (working === "at_work") return true;
+      if (raw === "on") return true;
+      if (phase === "cleaning") return true;
       return false;
     }
     if (pending === "off") {
@@ -352,6 +359,7 @@
     const empty = {
       enabled: false,
       enabledKnown: false,
+      runActive: false,
       pending: false,
       run1Days: new Set(),
       run1Time: "09:00",
@@ -374,8 +382,9 @@
       return state.run1Time ? `Schedule · ${state.run1Time}` : "Schedule";
     }
     if (!state.enabled) return "Schedule off";
-    if (!state.run2Enabled) return `On · ${state.run1Time}`;
-    return `On · ${state.run1Time} & ${state.run2Time}`;
+    const prefix = state.runActive ? "Active" : "On";
+    if (!state.run2Enabled) return `${prefix} · ${state.run1Time}`;
+    return `${prefix} · ${state.run1Time} & ${state.run2Time}`;
   }
 
   function parseScheduleDays(raw) {
@@ -865,7 +874,7 @@
             <span class="schedule-title">Schedule</span>
             <p class="schedule-msg">
               Pick your <strong>Dolphin device</strong> and use integration
-              v1.15.0+ schedule, or add helpers from
+              v1.15.0+ schedule (v1.17.0+ recommended), or add helpers from
               <code>examples/pool-cleaner-schedule.yaml</code>.
             </p>
           </div>
@@ -1779,7 +1788,7 @@
                     },
                     {
                       value: "integration",
-                      label: "Integration schedule (Dolphin v1.15.0+)",
+                      label: "Integration schedule (Dolphin v1.15.0+; v1.17+ states)",
                     },
                     {
                       value: "helpers",
