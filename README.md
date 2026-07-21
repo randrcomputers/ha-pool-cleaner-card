@@ -76,13 +76,19 @@ The card can drive a **simple HA schedule**: pick **days**, one or two **start t
 
 ### Recommended: integration schedule (Dolphin v1.15.0+)
 
-If the **Maytronics Dolphin** integration is **v1.15.0+** (v1.14.0+ for basic schedule; **v1.17.0+** for `active` / `scheduled` / `off` schedule sensor values) and the card has your **Dolphin device** selected:
+If the **Maytronics Dolphin** integration is **v1.15.0+** and the card has your **Dolphin device** selected:
 
 1. Enable **Show schedule panel** on the card.
 2. Leave **Schedule backend** on **Auto** (default).
 3. **No YAML package required** — schedule is stored in the integration.
 
 **Run 1** and **Run 2** each have their own **Days** row (e.g. weekdays for morning run, weekends for afternoon).
+
+During an active timed run (schedule fire or **Run 1h / 2h Now**), the card shows a quiet line under the status pill (needs Dolphin **v1.17.2+**), for example:
+
+`Started 8:02 AM · 1h 12m left`
+
+Manual **Power** uses the PS **Cycle time** (1h / 2h select) for the same countdown line. Timed schedule / Run Now still use their own durations.
 
 Update integration + card, reload resources (**Ctrl+F5**). Optional: remove or disable old `pool-cleaner-schedule.yaml` automations so only one scheduler runs.
 

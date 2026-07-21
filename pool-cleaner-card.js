@@ -121,6 +121,63 @@
     return attrs.run_active === true || attrs.run_active === "true";
   }
 
+  function parseIsoDate(value) {
+    if (!value || value === "unknown" || value === "unavailable") return null;
+    const d = new Date(String(value));
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  function formatClockTime(date) {
+    if (!date) return "";
+    try {
+      return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    } catch (_err) {
+      const h = date.getHours();
+      const m = String(date.getMinutes()).padStart(2, "0");
+      return `${h}:${m}`;
+    }
+  }
+
+  function formatRemaining(ms) {
+    if (ms <= 0) return "0m left";
+    const totalMin = Math.ceil(ms / 60000);
+    const hours = Math.floor(totalMin / 60);
+    const mins = totalMin % 60;
+    if (hours <= 0) return `${mins}m left`;
+    if (mins === 0) return `${hours}h left`;
+    return `${hours}h ${mins}m left`;
+  }
+
+  function readRunTiming(hass, scheduleEntityId) {
+    const empty = {
+      active: false,
+      startedAt: null,
+      endsAt: null,
+      durationMinutes: null,
+    };
+    if (!scheduleEntityId) return empty;
+    const st = entityState(hass, scheduleEntityId);
+    if (!st) return empty;
+    const a = st.attributes || {};
+    const startedAt = parseIsoDate(a.run_started_at);
+    const endsAt = parseIsoDate(a.run_ends_at);
+    let durationMinutes =
+      a.run_duration_minutes != null ? Number(a.run_duration_minutes) : null;
+    if (!Number.isFinite(durationMinutes)) durationMinutes = null;
+    const active = scheduleRunActiveFromState(st) && Boolean(endsAt);
+    return { active, startedAt, endsAt, durationMinutes };
+  }
+
+  function formatRunTimingLine(timing, nowMs = Date.now()) {
+    if (!timing?.active || !timing.endsAt) return null;
+    const endsMs = timing.endsAt.getTime();
+    const remaining = formatRemaining(endsMs - nowMs);
+    if (timing.startedAt) {
+      return `Started ${formatClockTime(timing.startedAt)} · ${remaining}`;
+    }
+    return `Ends ${formatClockTime(timing.endsAt)} · ${remaining}`;
+  }
+
   function parseScheduleStateFromEntity(st, empty) {
     if (!st) return empty;
     const a = st.attributes || {};
@@ -130,6 +187,12 @@
       enabled: enabled === null ? false : enabled,
       enabledKnown: enabled !== null,
       runActive: scheduleRunActiveFromState(st),
+      runStartedAt: parseIsoDate(a.run_started_at),
+      runEndsAt: parseIsoDate(a.run_ends_at),
+      runDurationMinutes:
+        a.run_duration_minutes != null
+          ? Number(a.run_duration_minutes)
+          : null,
       run1Days: a.run1_days != null ? parseScheduleDays(a.run1_days) : legacyDays,
       run1Time: String(a.run1_time || "09:00").slice(0, 5),
       run1Duration: durationLabelFromMinutes(a.run1_duration_minutes),
@@ -360,6 +423,9 @@
       enabled: false,
       enabledKnown: false,
       runActive: false,
+      runStartedAt: null,
+      runEndsAt: null,
+      runDurationMinutes: null,
       pending: false,
       run1Days: new Set(),
       run1Time: "09:00",
@@ -445,6 +511,8 @@
         _scheduleExpanded: { state: false },
         /** Optimistic integration schedule until sensor state catches up. */
         _schedDraft: { state: null },
+        /** Tick so remaining-time countdown updates without waiting for HA poll. */
+        _nowMs: { state: true },
       };
     }
 
@@ -454,6 +522,22 @@
 
     static getStubConfig() {
       return { type: "custom:pool-cleaner-card" };
+    }
+
+    connectedCallback() {
+      super.connectedCallback();
+      this._nowMs = Date.now();
+      this._timingTimer = window.setInterval(() => {
+        this._nowMs = Date.now();
+      }, 30000);
+    }
+
+    disconnectedCallback() {
+      if (this._timingTimer) {
+        window.clearInterval(this._timingTimer);
+        this._timingTimer = null;
+      }
+      super.disconnectedCallback();
     }
 
     getCardSize() {
@@ -1098,6 +1182,11 @@
       const imgSrc = active ? cfg.image_robot : cfg.image_psu;
       const showPsuRing =
         !active && (powered || pending === "on");
+      const runTiming = readRunTiming(this.hass, entities.schedule);
+      const timingLine = formatRunTimingLine(
+        runTiming,
+        this._nowMs || Date.now()
+      );
 
       return html`
         <ha-card>
@@ -1124,9 +1213,14 @@
             </div>
 
             <div class="footer">
-              <div class="state-pill ${pending ? "is-pending" : ""}">
-                <span class="dot ${dotClass}"></span>
-                <span class="state-text">${stateLabel}</span>
+              <div class="state-block">
+                <div class="state-pill ${pending ? "is-pending" : ""}">
+                  <span class="dot ${dotClass}"></span>
+                  <span class="state-text">${stateLabel}</span>
+                </div>
+                ${timingLine
+                  ? html`<div class="run-timing">${timingLine}</div>`
+                  : ""}
               </div>
               <button
                 class="power ${powered ? "on" : ""} ${pending ? "pending" : ""}"
@@ -1337,6 +1431,13 @@
           gap: 10px;
           margin-top: 6px;
         }
+        .state-block {
+          flex: 1;
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
         .state-pill {
           display: flex;
           align-items: center;
@@ -1344,8 +1445,18 @@
           padding: 6px 12px;
           border-radius: 20px;
           background: var(--secondary-background-color);
-          flex: 1;
           min-width: 0;
+          width: fit-content;
+          max-width: 100%;
+        }
+        .run-timing {
+          font-size: 0.75rem;
+          line-height: 1.2;
+          color: var(--secondary-text-color);
+          padding: 0 4px 0 12px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
         .dot {
           width: 8px;
