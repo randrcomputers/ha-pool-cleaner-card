@@ -8,6 +8,8 @@ Lovelace card for the **[Maytronics Dolphin](https://github.com/randrcomputers/h
 | :---: | :---: |
 <img width="503" height="309" alt="image" src="https://github.com/user-attachments/assets/af260690-9505-4cb9-8bd0-2b188135e3a0" />
 
+<img width="500" height="636" alt="image" src="https://github.com/user-attachments/assets/6dde1e73-f53f-4eb6-804a-43824e396cd6" />
+
 | ![Cleaner preview](media/preview-cleaner.gif) | ![Power supply preview](media/preview-power-supply.gif) |
 
 Your own card images (`robot` / `psu` URLs in the editor) can be **PNG, JPEG, WebP**, or **GIF** if you prefer.
