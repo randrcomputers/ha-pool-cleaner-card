@@ -63,6 +63,7 @@
     surface: "_cleaning_surface",
     working: "_working_status",
     schedule: "_schedule",
+    cycle: "_cycle_time",
   };
 
   function entityState(hass, entityId) {
@@ -178,6 +179,40 @@
     return `Ends ${formatClockTime(timing.endsAt)} · ${remaining}`;
   }
 
+  function parseDurationMinutes(value) {
+    if (value == null || value === "") return null;
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    const s = String(value).trim().toLowerCase();
+    const hoursMatch = s.match(/(\d+(?:\.\d+)?)\s*h(?:ours?)?/);
+    const minsMatch = s.match(/(\d+(?:\.\d+)?)\s*m(?:in(?:utes?)?)?/);
+    let n = 0;
+    if (hoursMatch) n += Math.round(Number(hoursMatch[1]) * 60);
+    if (minsMatch) n += Math.round(Number(minsMatch[1]));
+    if (n > 0) return n;
+    const num = Number(s);
+    return Number.isFinite(num) ? num : null;
+  }
+
+  function formatActiveCycleLine(hass, entities, nowMs = Date.now()) {
+    const cycleSt = entities.cycle ? entityState(hass, entities.cycle) : null;
+    const scheduleSt = entities.schedule ? entityState(hass, entities.schedule) : null;
+    const minutes =
+      parseDurationMinutes(cycleSt?.state) ||
+      parseDurationMinutes(scheduleSt?.attributes?.run1_duration_minutes);
+    if (!minutes) return null;
+    const startSrc =
+      (entities.cleaning && entityState(hass, entities.cleaning)) ||
+      (entities.working && entityState(hass, entities.working)) ||
+      (entities.power && entityState(hass, entities.power));
+    const startedAt = startSrc?.last_changed ? new Date(startSrc.last_changed) : null;
+    if (!startedAt || Number.isNaN(startedAt.getTime())) return null;
+    const endsAt = new Date(startedAt.getTime() + minutes * 60000);
+    return formatRunTimingLine(
+      { active: true, startedAt, endsAt, durationMinutes: minutes },
+      nowMs
+    );
+  }
+
   function parseScheduleStateFromEntity(st, empty) {
     if (!st) return empty;
     const a = st.attributes || {};
@@ -224,6 +259,7 @@
       surface: null,
       working: null,
       schedule: null,
+      cycle: null,
     };
     const registry = hass.entities || {};
     for (const [eid, ent] of Object.entries(registry)) {
@@ -262,6 +298,21 @@
     return null;
   }
 
+  function workingCycleTimedOut(hass, entities) {
+    const working = getWorkingStatus(hass, entities);
+    if (working !== "at_work") return false;
+    const minutes =
+      parseDurationMinutes(entities.cycle ? entityState(hass, entities.cycle)?.state : null) ||
+      parseDurationMinutes(entityState(hass, entities.schedule)?.attributes?.run1_duration_minutes) ||
+      120;
+    const startSrc =
+      (entities.working && entityState(hass, entities.working)) ||
+      (entities.cleaning && entityState(hass, entities.cleaning));
+    const started = startSrc?.last_changed ? Date.parse(startSrc.last_changed) : NaN;
+    if (!Number.isFinite(started)) return false;
+    return Date.now() - started > (minutes * 60 + 600) * 1000;
+  }
+
   /**
    * UI phase for labels and robot vs PSU artwork.
    * cleaning = motors/working; done = cycle finished or hold; powered_idle = on but not at_work.
@@ -273,7 +324,7 @@
     const working = getWorkingStatus(hass, entities);
 
     if (raw === "on") {
-      if (working === "finished") return "done";
+      if (working === "finished" || workingCycleTimedOut(hass, entities)) return "done";
       if (working === "at_work") return "cleaning";
       if (working === "fault") return "fault";
       return "powered_idle";
@@ -1183,10 +1234,9 @@
       const showPsuRing =
         !active && (powered || pending === "on");
       const runTiming = readRunTiming(this.hass, entities.schedule);
-      const timingLine = formatRunTimingLine(
-        runTiming,
-        this._nowMs || Date.now()
-      );
+      const timingLine =
+        formatRunTimingLine(runTiming, this._nowMs || Date.now()) ||
+        (active ? formatActiveCycleLine(this.hass, entities, this._nowMs || Date.now()) : null);
 
       return html`
         <ha-card>
@@ -1287,14 +1337,19 @@
       return css`
         :host {
           display: block;
+          height: 100%;
         }
         ha-card {
           overflow: hidden;
+          height: 100%;
+          box-sizing: border-box;
           background: var(--card-background-color, var(--ha-card-background));
         }
         .card {
           padding: 12px 14px 14px;
-          min-height: 200px;
+          min-height: 0;
+          height: 100%;
+          box-sizing: border-box;
           display: flex;
           flex-direction: column;
         }
@@ -1312,6 +1367,7 @@
           align-items: center;
           justify-content: space-between;
           margin-bottom: 4px;
+          flex-shrink: 0;
         }
         .title {
           font-size: 1rem;
@@ -1347,19 +1403,23 @@
           display: flex;
           align-items: center;
           justify-content: center;
-          min-height: 130px;
+          min-height: 0;
+          overflow: hidden;
         }
         .art-local-wrap {
           position: relative;
-          width: 100%;
+          width: auto;
           max-width: 240px;
-          display: inline-block;
+          max-height: 100%;
+          height: 100%;
+          display: block;
           line-height: 0;
         }
         .art-img {
-          width: 100%;
-          height: auto;
-          max-height: 160px;
+          width: auto;
+          max-width: 100%;
+          height: 100%;
+          max-height: 100%;
           object-fit: contain;
           display: block;
           border-radius: 8px;
@@ -1430,6 +1490,9 @@
           justify-content: space-between;
           gap: 10px;
           margin-top: 6px;
+          flex-shrink: 0;
+          position: relative;
+          z-index: 2;
         }
         .state-block {
           flex: 1;
@@ -1986,8 +2049,19 @@
     }
   }
 
-  customElements.define("pool-cleaner-card", PoolCleanerCard);
-  customElements.define("pool-cleaner-card-editor", PoolCleanerCardEditor);
+  if (!customElements.get("pool-cleaner-card")) {
+    customElements.define("pool-cleaner-card", PoolCleanerCard);
+  } else {
+    const proto = customElements.get("pool-cleaner-card").prototype;
+    const src = PoolCleanerCard.prototype;
+    for (const name of Object.getOwnPropertyNames(src)) {
+      if (name === "constructor") continue;
+      proto[name] = src[name];
+    }
+  }
+  if (!customElements.get("pool-cleaner-card-editor")) {
+    customElements.define("pool-cleaner-card-editor", PoolCleanerCardEditor);
+  }
 
   window.customCards = window.customCards || [];
   window.customCards.push({
