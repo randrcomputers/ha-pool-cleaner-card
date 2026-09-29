@@ -278,8 +278,12 @@
     }
     return {
       ...found,
-      ...manual,
       power: manual.power || found.power,
+      state: manual.state || found.state,
+      cleaning: manual.cleaning || found.cleaning,
+      connected: manual.connected || found.connected,
+      surface: manual.surface || found.surface,
+      working: manual.working || found.working,
     };
   }
 
@@ -293,21 +297,23 @@
     if (entities.surface) {
       const st = entityState(hass, entities.surface);
       const w = st?.attributes?.working_status;
-      if (w) return String(w).toLowerCase();
+      if (w && String(w).toLowerCase() !== "unknown") return String(w).toLowerCase();
     }
     return null;
   }
 
   function workingCycleTimedOut(hass, entities) {
     const working = getWorkingStatus(hass, entities);
-    if (working !== "at_work") return false;
+    // New robots often never report at_work; still end the animation after the cycle.
+    if (working && working !== "at_work") return false;
     const minutes =
       parseDurationMinutes(entities.cycle ? entityState(hass, entities.cycle)?.state : null) ||
       parseDurationMinutes(entityState(hass, entities.schedule)?.attributes?.run1_duration_minutes) ||
       120;
     const startSrc =
       (entities.working && entityState(hass, entities.working)) ||
-      (entities.cleaning && entityState(hass, entities.cleaning));
+      (entities.cleaning && entityState(hass, entities.cleaning)) ||
+      (entities.state && entityState(hass, entities.state));
     const started = startSrc?.last_changed ? Date.parse(startSrc.last_changed) : NaN;
     if (!Number.isFinite(started)) return false;
     return Date.now() - started > (minutes * 60 + 600) * 1000;
@@ -327,6 +333,15 @@
       if (working === "finished" || workingCycleTimedOut(hass, entities)) return "done";
       if (working === "at_work") return "cleaning";
       if (working === "fault") return "fault";
+      // GetStatus empty (common on newer Dolphins): working stays unknown.
+      // Cleaning-active or power-on is enough to show the robot and bubbles.
+      if (!working) {
+        if (entities.cleaning) {
+          if (isOn(hass, entities.cleaning)) return "cleaning";
+          return "powered_idle";
+        }
+        if (powerOn) return "cleaning";
+      }
       return "powered_idle";
     }
     if (raw === "hold") return "done";

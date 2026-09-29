@@ -44,31 +44,42 @@ device: YOUR_DEVICE_ID
 
 ---
 
-**Requirements:** Home Assistant 2024.1+ and the Maytronics Dolphin BLE integration (**v0.7.4+** for reliable **Working status** on models where `fffc` GetStatus is empty).
+**Requirements:** Home Assistant 2024.1+ and the Maytronics Dolphin BLE integration (**v0.7.4+**). Newer robots on an ESPHome / HA Bluetooth proxy often leave GATT `fffc` / `fffd` empty, so **Working status** stays `unknown`. The card still animates from **Cleaner state** + **Cleaning active**.
 
 ### Card entity wiring
 
 | Field | Use |
 | --- | --- |
-| **Dolphin device** | Recommended — auto-fills Power, Cleaner state, Working status |
+| **Dolphin device** | Recommended — auto-fills Power, Cleaner state, Working status, Cleaning active |
 | **Cleaner state** | Keep as **Cleaner state** (do not swap for Clean program) |
-| **Working status** | Leave empty if device is set; card needs `at_work` / `finished` (v0.7.4 infers this when GetStatus is missing) |
-| **Cleaning active** | Optional — ignored for the status pill (too broad after a cycle) |
+| **Working status** | Leave empty if device is set. Used when the hub reports `at_work` / `finished` / `fault` |
+| **Cleaning active** | Used when Working status is `unknown` (proxy / new robot). Not used after **hold** / **finished** |
 | **Clean program** | Not used by this card |
 
 ## Status pill (not just “power on”)
 
-The card uses **Cleaner state** plus **Working status** (from the integration’s `GetStatusRead` poll, or the `working_status` attribute on **Cleaning surface**):
+The card uses **Cleaner state** plus **Working status**. If Working status is empty (`unknown`), it falls back to **Cleaning active** (or power on) so the robot still animates on newer Dolphins / proxies:
 
 | What you see | Meaning |
 | --- | --- |
-| **Cleaning** | Robot reports `at_work` — bubbles, robot image, green pulsing dot |
-| **Done cleaning** | Cycle finished (`finished`) or cleaner state **hold** |
-| **Powered on** | Power/PS still on but not actively cleaning (avoids false “Running”) |
-| **Off** | Cleaner state off |
+| **Cleaning** | `at_work`, **or** Working status unknown and cleaner is on / cleaning-active — bubbles, robot image, green pulsing dot |
+| **Done cleaning** | Cycle finished (`finished`), cleaner state **hold**, or the selected cycle time ran out |
+| **Powered on** | Power/PS still on but not actively cleaning |
+| **Off** | Cleaner state off (and power off) |
 | **Programming** / **Self test** / **Fault** | Matching robot modes |
 
-Power button still reflects the **Power** switch. Robot artwork and LED overlay only appear while status is **Cleaning** (unless you set *Robot vs power supply image* to Always/Never in card options).
+Power button still reflects the **Power** switch. After you turn the cleaner **off**, the pill should say **Off** and the artwork should go back to the power supply (unless you set *Robot vs power supply image* to Always).
+
+Robot artwork and LED overlay only appear while status is **Cleaning** (unless you set Always/Never in card options).
+
+## Changelog
+
+### v2.2.0
+
+- **Cleaning animation when Working status is `unknown`.** Newer robots and Bluetooth proxies often never report `at_work`. The card now uses Cleaning active / power-on so the robot, bubbles, and **Cleaning** pill still show.
+- Manual entity picks no longer wipe auto-bound Cleaning active / Working status from the Dolphin device.
+- Cycle timeout still flips to **Done cleaning** after the 1 h / 2 h cycle if GetStatus never arrives.
+- Power **off** still shows **Off** and the PSU image.
 
 ## Schedule (Home Assistant — not the phone app)
 
